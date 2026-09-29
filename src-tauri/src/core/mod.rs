@@ -1,3 +1,4 @@
+pub mod auto_chain;
 pub mod autostart;
 pub mod backup;
 pub mod handle;

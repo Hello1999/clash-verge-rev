@@ -5,8 +5,12 @@ import { useCallback, useEffect, useReducer, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { BasePage, TooltipIcon } from '@/components/base'
+import { AutoChain } from '@/components/proxy/auto-chain'
+import { ClaudeGuard } from '@/components/proxy/claude-guard'
 import { ProviderButton } from '@/components/proxy/provider-button'
 import { ProxyGroups } from '@/components/proxy/proxy-groups'
+import { useProfiles } from '@/hooks/use-profiles'
+import { useVerge } from '@/hooks/use-verge'
 import {
   useAppRefreshers,
   useClashConfigData,
@@ -27,6 +31,11 @@ const isMode = (value: unknown): value is Mode =>
 
 const ProxyPage = () => {
   const { t } = useTranslation()
+  const { verge } = useVerge()
+  const { profiles } = useProfiles()
+  const autoChainEnabled =
+    verge?.auto_chain?.enabled &&
+    verge.auto_chain.profile_uid === profiles?.current
 
   // 从 localStorage 恢复链式代理按钮状态
   const [isChainMode, setIsChainMode] = useState(() => {
@@ -160,6 +169,7 @@ const ProxyPage = () => {
             {MODES.map((mode) => (
               <Button
                 key={mode}
+                disabled={!!verge?.claude_guard_enabled && mode !== 'rule'}
                 variant={mode === curMode ? 'contained' : 'outlined'}
                 onClick={() => onChangeMode(mode)}
                 sx={{ textTransform: 'capitalize' }}
@@ -172,6 +182,7 @@ const ProxyPage = () => {
           <Button
             size="small"
             variant={isChainMode ? 'contained' : 'outlined'}
+            disabled={!!autoChainEnabled}
             onClick={onToggleChainMode}
             sx={{ ml: 1 }}
             startIcon={
@@ -184,6 +195,16 @@ const ProxyPage = () => {
           >
             {t('proxies.page.actions.toggleChain')}
           </Button>
+          <ClaudeGuard />
+          <AutoChain
+            onEnabled={() => {
+              setIsChainMode(false)
+              localStorage.setItem('proxy-chain-mode-enabled', 'false')
+              localStorage.removeItem('proxy-chain-exit-node')
+              localStorage.removeItem('proxy-chain-group')
+              localStorage.removeItem('proxy-chain-items')
+            }}
+          />
         </Box>
       }
     >

@@ -1,6 +1,14 @@
 ## v2.5.6
 
 <details>
+<summary><strong> ✨ 新增功能 </strong></summary>
+
+- 新增「Claude 出口保护」：固定出口访问 Claude，断线不回退到普通节点
+- 新增「自动链路」：自选固定出口、多选中转订阅，查看全链路测速结果并在断线后自动切换
+
+</details>
+
+<details>
 <summary><strong> 🐞 修复问题 </strong></summary>
 
 - 修复「代理集合」「规则集合」订阅响应较慢时更新误报失败、且不显示真实失败原因的问题

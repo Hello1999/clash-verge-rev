@@ -106,6 +106,47 @@ export async function getRuntimeProxyChainConfig(proxyChainExitNode: string) {
   })
 }
 
+export interface AutoChainSubscription {
+  source: string
+  label: string
+  count: number
+}
+
+export interface AutoChainRouteStatus {
+  name: string
+  alive: boolean
+  delay: number | null
+  checked_at: string | null
+}
+
+export interface AutoChainExit {
+  route_id: string
+  source: string
+  source_label: string
+  name: string
+}
+
+export async function getAutoChainOptions() {
+  return invoke<{
+    exits: AutoChainExit[]
+    subscriptions: AutoChainSubscription[]
+    warnings: string[]
+  }>('get_auto_chain_options')
+}
+
+export async function getAutoChainStatus() {
+  return invoke<{
+    routes: AutoChainRouteStatus[]
+    selected: string | null
+    healthy: number
+    total: number
+    in_use: boolean
+    fixed: boolean
+    delay: number | null
+    checked_at: string | null
+  } | null>('get_auto_chain_status')
+}
+
 export async function updateProxyChainConfigInRuntime(proxyChainConfig: any) {
   return invoke<void>('update_proxy_chain_config_in_runtime', {
     proxyChainConfig,
@@ -540,3 +581,13 @@ export const probeListener = async (request: ListenerProbe) => {
 export const saveProxyPorts = async (settings: ProxyPortSettings) => {
   return invoke<SaveProxyPortsOutcome>('save_proxy_ports', { settings })
 }
+
+export const getClaudeGuardStatus = () =>
+  invoke<{
+    enabled: boolean
+    gateway_reachable: boolean
+    exit_verified: boolean
+    expected_exit: string
+    reason: string
+    domains: string[]
+  }>('get_claude_guard_status')

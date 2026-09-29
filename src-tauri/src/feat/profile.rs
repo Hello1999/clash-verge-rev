@@ -194,7 +194,13 @@ pub async fn update_profile(uid: &String, option: Option<&PrfOption>, is_mannual
     };
     let profiles = Config::profiles().await;
     let is_current = profiles.latest_arc().current.as_ref() == Some(uid);
-    let should_refresh = is_current || (!profile_persisted && is_mannual_trigger);
+    let auto_chain_active = Config::verge()
+        .await
+        .latest_arc()
+        .auto_chain
+        .as_ref()
+        .is_some_and(|settings| settings.active_for(&profiles.latest_arc()));
+    let should_refresh = is_current || auto_chain_active || (!profile_persisted && is_mannual_trigger);
 
     if should_refresh {
         logging!(debug, Type::Config, "[订阅更新] 更新内核配置");

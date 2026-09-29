@@ -72,6 +72,7 @@ async fn resolve_setup() {
         init_verge_config().await;
     }
     Config::verify_config_initialization().await;
+    crate::core::auto_chain::start();
 
     // Live before the core starts, so a service appearing mid-start is not missed.
     #[cfg(target_os = "macos")]

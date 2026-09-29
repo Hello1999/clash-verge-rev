@@ -43,6 +43,9 @@ pub async fn patch_clash_mode(payload: String) -> CmdResult {
 /// Reads the saved mode without depending on strict mihomo `/configs` deserialization.
 #[tauri::command]
 pub async fn get_clash_mode() -> CmdResult<Option<String>> {
+    if Config::verge().await.data_arc().claude_guard_enabled.unwrap_or(false) {
+        return Ok(Some("rule".into()));
+    }
     Ok(Config::clash().await.data_arc().get_mode().map(Into::into))
 }
 

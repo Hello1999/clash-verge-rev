@@ -79,6 +79,12 @@ fn after_change_clash_mode() {
 
 /// Propagates mihomo PATCH failures so the frontend can roll back its optimistic mode.
 pub async fn change_clash_mode(mode: String) -> Result<(), String> {
+    let _config_write = Config::lock_config_write().await;
+    crate::enhance::claude_guard::check_mode(
+        Config::verge().await.latest_arc().claude_guard_enabled.unwrap_or(false),
+        &mode,
+    )
+    .map_err(String::from)?;
     let mut mapping = Mapping::new();
     mapping.insert(Value::from("mode"), Value::from(mode.as_str()));
     let json_value = serde_json::json!({

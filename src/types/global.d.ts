@@ -851,6 +851,18 @@ interface IProxyConfig
 }
 
 interface IVergeConfig {
+  claude_guard_enabled?: boolean
+  auto_chain?: {
+    enabled: boolean
+    profile_uid: string
+    entry_sources?: string[] | null
+    exit_source: string
+    exit_name: string
+    target_group: string
+    interval: number
+    tolerance: number
+    url: string
+  }
   app_log_level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | string
   app_log_max_size?: number // KB
   app_log_max_count?: number

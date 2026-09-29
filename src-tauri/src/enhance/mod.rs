@@ -1,4 +1,6 @@
+pub mod auto_chain;
 mod chain;
+pub mod claude_guard;
 pub mod field;
 mod merge;
 mod script;
@@ -963,6 +965,16 @@ pub async fn enhance(
     let config = authoritative.enforce(config);
     let config = ensure_lan_bind_address(config);
 
+    let mut config = config;
+    if let Some(settings) = Config::verge().await.latest_arc().auto_chain.clone()
+        && settings.active_for(profiles)
+    {
+        let catalog = auto_chain::collect(profiles, &config).await?;
+        auto_chain::build(&mut config, &settings, &catalog)?;
+    }
+    if Config::verge().await.latest_arc().claude_guard_enabled.unwrap_or(false) {
+        claude_guard::enforce(&mut config);
+    }
     let config = cleanup_proxy_groups(config);
     let config = use_sort(config);
 

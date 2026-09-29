@@ -13,6 +13,12 @@ use smartstring::alias::String;
 /// ### `verge.yaml` schema
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct IVerge {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_guard_enabled: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_chain: Option<crate::enhance::auto_chain::AutoChainSettings>,
+
     /// silent | error | warn | info | debug | trace
     pub app_log_level: Option<String>,
 
@@ -410,6 +416,8 @@ impl IVerge {
         }
 
         patch!(app_log_level);
+        patch!(auto_chain);
+        patch!(claude_guard_enabled);
         patch!(app_log_max_size);
         patch!(app_log_max_count);
 

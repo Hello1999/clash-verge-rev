@@ -12,6 +12,14 @@ use tokio::sync::MutexGuard;
 
 /// Patch Clash configuration
 pub async fn patch_clash(patch: &Mapping) -> Result<()> {
+    let _config_write = Config::lock_config_write().await;
+    if let Some(mode) = patch.get("mode").and_then(serde_yaml_ng::Value::as_str) {
+        crate::enhance::claude_guard::check_mode(
+            Config::verge().await.latest_arc().claude_guard_enabled.unwrap_or(false),
+            mode,
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
     Config::clash().await.edit_draft(|d| d.patch_config(patch));
 
     let res = {
@@ -141,6 +149,9 @@ fn determine_update_flags(patch: &IVerge) -> UpdateFlags {
     }
 
     let mut update_flags = UpdateFlags::empty();
+    if patch.auto_chain.is_some() || patch.claude_guard_enabled.is_some() {
+        update_flags.insert(UpdateFlags::CLASH_CONFIG);
+    }
     if restart_core_needed {
         update_flags.insert(UpdateFlags::RESTART_CORE);
     }
@@ -317,6 +328,9 @@ pub(super) async fn apply_verge_patch_locked(
         // 分离数据获取和异步调用
         let verge_data = verge.data_arc();
         verge_data.save_file().await?;
+    }
+    if patch.claude_guard_enabled == Some(true) {
+        handle::Handle::mihomo().close_all_connections().await?;
     }
     Ok(())
 }

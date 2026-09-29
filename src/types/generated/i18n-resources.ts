@@ -484,6 +484,69 @@ export interface TranslationResources {
       }
     }
     proxies: {
+      autoChain: {
+        advanced: string
+        apply: string
+        applying: string
+        checkedAt: string
+        close: string
+        connectivity: string
+        current: string
+        description: string
+        directMode: string
+        exit: string
+        exitHelp: string
+        failed: string
+        hint: string
+        initialScan: string
+        interval: string
+        latency: string
+        loadFailed: string
+        next: string
+        noResults: string
+        notSelected: string
+        page: string
+        pending: string
+        previous: string
+        progress: string
+        reachable: string
+        recovering: string
+        relay: string
+        results: string
+        resultsHint: string
+        route: string
+        routeHint: string
+        running: string
+        runtimeSource: string
+        search: string
+        sharedResult: string
+        sources: string
+        sourcesHelp: string
+        stop: string
+        summary: string
+        target: string
+        targetHelp: string
+        title: string
+        tolerance: string
+        toleranceHelp: string
+        unavailable: string
+        url: string
+      }
+      claudeGuard: {
+        blocked: string
+        boundary: string
+        close: string
+        description: string
+        disable: string
+        disabled: string
+        domains: string
+        enable: string
+        enabled: string
+        mode: string
+        route: string
+        title: string
+        verified: string
+      }
       components: {
         enums: {
           policies: {
