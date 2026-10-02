@@ -20,7 +20,13 @@ pub struct AutoChainSettings {
     pub target_group: String,
     pub interval: u64,
     pub tolerance: u64,
+    #[serde(default = "default_max_latency")]
+    pub max_latency: u64,
     pub url: String,
+}
+
+pub const fn default_max_latency() -> u64 {
+    1000
 }
 
 impl AutoChainSettings {
@@ -32,6 +38,10 @@ impl AutoChainSettings {
         ensure!(
             (5..=300).contains(&self.interval),
             "Check interval must be between 5 and 300 seconds"
+        );
+        ensure!(
+            (200..=5000).contains(&self.max_latency),
+            "High latency threshold must be between 200 and 5000 ms"
         );
         ensure!(self.tolerance <= 1000, "Switch tolerance must not exceed 1000 ms");
         ensure!(
@@ -316,19 +326,11 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
         }
     }
     // Never bypass the chosen exit when its subscription disappears or no entries remain.
-    if routes.is_empty() {
-        routes.push("REJECT".into());
-    }
+    routes.insert(0, "REJECT".into());
     let mut group = Mapping::new();
     group.insert("name".into(), GROUP.into());
-    group.insert("type".into(), "url-test".into());
+    group.insert("type".into(), "select".into());
     group.insert("proxies".into(), routes.into());
-    group.insert("url".into(), settings.url.clone().into());
-    group.insert("interval".into(), settings.interval.into());
-    group.insert("tolerance".into(), settings.tolerance.into());
-    group.insert("timeout".into(), 2000.into());
-    group.insert("max-failed-times".into(), 1.into());
-    group.insert("lazy".into(), false.into());
     if settings.target_group != "GLOBAL" {
         let target = groups
             .iter_mut()
@@ -389,6 +391,7 @@ mod tests {
             target_group: "Proxy".into(),
             interval: 5,
             tolerance: 50,
+            max_latency: default_max_latency(),
             url: "https://www.gstatic.com/generate_204".into(),
         }
     }
@@ -423,12 +426,13 @@ mod tests {
         let groups = config["proxy-groups"].as_sequence().context("Missing groups")?;
         let group = groups.last().context("Missing automatic group")?;
         assert_eq!(proxies.len(), 4);
-        assert_eq!(group["lazy"], Value::Bool(false));
+        assert_eq!(group["type"].as_str(), Some("select"));
         assert_eq!(config["unified-delay"], Value::Bool(false));
         let routes = group["proxies"].as_sequence().context("Missing routes")?;
-        assert_eq!(routes.len(), 2);
-        assert_ne!(routes[0], routes[1], "Identical subscription names must not collide");
-        for route in routes {
+        assert_eq!(routes.len(), 3);
+        assert_eq!(routes[0].as_str(), Some("REJECT"));
+        assert_ne!(routes[1], routes[2], "Identical subscription names must not collide");
+        for route in &routes[1..] {
             let exit = proxies
                 .iter()
                 .find(|proxy| proxy.get("name") == Some(route))
@@ -456,11 +460,11 @@ mod tests {
         let mut settings = settings();
         settings.entry_sources = Some(vec!["a".into(), "b".into()]);
         build(&mut config, &settings, &catalog)?;
-        assert_eq!(config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(), 2);
+        assert_eq!(config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(), 3);
         settings.entry_sources = Some(vec!["a".into()]);
         let mut config = without_generated(config);
         build(&mut config, &settings, &catalog)?;
-        assert_eq!(config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(), 1);
+        assert_eq!(config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(), 2);
         assert_eq!(config["proxies"][0]["server"].as_str(), Some("entry-a.example"));
         assert_eq!(config["proxies"][1]["server"].as_str(), Some("exit.example"));
         settings.entry_sources = Some(vec![]);
@@ -469,6 +473,29 @@ mod tests {
         let mut config = without_generated(config);
         build(&mut config, &settings, &catalog)?;
         assert_eq!(config["proxy-groups"][1]["proxies"][0].as_str(), Some("REJECT"));
+        Ok(())
+    }
+
+    #[test]
+    fn all_subscriptions_include_new_sources_and_legacy_settings_load() -> Result<()> {
+        let (mut config, mut catalog) = fixture()?;
+        let mut legacy = serde_json::to_value(settings())?;
+        legacy.as_object_mut().unwrap().remove("max_latency");
+        let settings: AutoChainSettings = serde_json::from_value(legacy)?;
+        assert_eq!(settings.max_latency, 1000);
+        build(&mut config, &settings, &catalog)?;
+        let count = config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len();
+        catalog.nodes.push(Candidate {
+            source: "new-subscription".into(),
+            source_label: "New".into(),
+            proxy: serde_yaml_ng::from_str("name: New\ntype: socks5\nserver: new.example\nport: 1080\n")?,
+        });
+        let mut config = without_generated(config);
+        build(&mut config, &settings, &catalog)?;
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(),
+            count + 1
+        );
         Ok(())
     }
 

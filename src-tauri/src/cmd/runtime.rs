@@ -209,7 +209,7 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
                 .get(&settings.target_group)
                 .and_then(|group| group.now.as_deref())
                 == Some(GROUP),
-        fixed: group.fixed.as_ref().is_some_and(|fixed| !fixed.is_empty()),
+        fixed: false,
         delay: last
             .filter(|_| group.now.as_deref().and_then(state).is_some_and(|state| state.alive))
             .map(|sample| sample.delay),

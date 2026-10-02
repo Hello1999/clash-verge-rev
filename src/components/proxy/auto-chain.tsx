@@ -12,6 +12,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   MenuItem,
   Stack,
   TextField,
@@ -19,7 +20,7 @@ import {
 } from '@mui/material'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { selectNodeForGroup, unfixedProxy } from 'tauri-plugin-mihomo-api'
+import { selectNodeForGroup } from 'tauri-plugin-mihomo-api'
 
 import { useProfiles } from '@/hooks/use-profiles'
 import { useVerge } from '@/hooks/use-verge'
@@ -56,6 +57,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const [target, setTarget] = useState('')
   const [interval, setInterval] = useState(15)
   const [tolerance, setTolerance] = useState(50)
+  const [maxLatency, setMaxLatency] = useState(1000)
   const [url, setUrl] = useState(DEFAULT_URL)
   const saved = verge?.auto_chain
   const enabled = saved?.enabled && saved.profile_uid === profiles?.current
@@ -76,7 +78,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const groups = [
     ...(clashConfig?.mode === 'global' && proxyView?.global ? ['GLOBAL'] : []),
     ...(proxyView?.groups
-      .filter((group) => group.type === 'Selector')
+      .filter((group) => group.type === 'Selector' && group.name !== GROUP)
       .map((group) => group.name) ?? []),
   ]
   const savedExit = options.data?.exits.find(
@@ -105,6 +107,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
     )
     setInterval(saved?.interval ?? 15)
     setTolerance(saved?.tolerance ?? 50)
+    setMaxLatency(saved?.max_latency ?? 1000)
     setUrl(saved?.url ?? DEFAULT_URL)
     setOpen(true)
     void options.refetch()
@@ -119,17 +122,17 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
         auto_chain: {
           enabled: true,
           profile_uid: profiles.current,
-          entry_sources: chosenSources,
+          entry_sources: sources,
           exit_source: chosenExit.source,
           exit_name: chosenExit.name,
           target_group: target,
           interval,
           tolerance,
+          max_latency: maxLatency,
           url,
         },
       })
       onEnabled()
-      await unfixedProxy(GROUP)
       await selectNodeForGroup(target, GROUP)
       await recordSelectedNode(target, GROUP)
       await refreshProxy()
@@ -198,7 +201,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                 <Typography variant="body2">
                   {live.error
                     ? t('proxies.autoChain.unavailable')
-                    : !status?.in_use || status.fixed
+                    : !status?.in_use
                       ? t('proxies.autoChain.notSelected')
                       : healthy
                         ? t('proxies.autoChain.running', {
@@ -247,6 +250,18 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                   helperText={t('proxies.autoChain.exitHelp')}
                 />
               )}
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={sources === null}
+                  disabled={busy}
+                  onChange={(_, checked) =>
+                    setSources(checked ? null : chosenSources)
+                  }
+                />
+              }
+              label={t('proxies.autoChain.allSources')}
             />
             <Autocomplete
               multiple
@@ -344,6 +359,15 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                     />
                   </Box>
                   <TextField
+                    type="number"
+                    label={t('proxies.autoChain.maxLatency')}
+                    helperText={t('proxies.autoChain.maxLatencyHelp')}
+                    value={maxLatency}
+                    onChange={(event) => setMaxLatency(Number(event.target.value))}
+                    disabled={busy}
+                    slotProps={{ htmlInput: { min: 200, max: 5000 } }}
+                  />
+                  <TextField
                     label={t('proxies.autoChain.url')}
                     value={url}
                     onChange={(event) => setUrl(event.target.value)}
@@ -383,6 +407,8 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
               interval > 300 ||
               tolerance < 0 ||
               tolerance > 1000 ||
+              maxLatency < 200 ||
+              maxLatency > 5000 ||
               !url.startsWith('https://')
             }
           >

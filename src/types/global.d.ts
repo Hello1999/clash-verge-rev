@@ -856,6 +856,7 @@ interface IVergeConfig {
     enabled: boolean
     profile_uid: string
     entry_sources?: string[] | null
+    max_latency?: number
     exit_source: string
     exit_name: string
     target_group: string
