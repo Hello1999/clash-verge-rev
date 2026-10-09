@@ -493,6 +493,7 @@ export interface TranslationResources {
         close: string
         connectivity: string
         current: string
+        currentChain: string
         description: string
         directMode: string
         exit: string
@@ -506,6 +507,7 @@ export interface TranslationResources {
         maxLatency: string
         maxLatencyHelp: string
         next: string
+        noCandidates: string
         noResults: string
         notSelected: string
         page: string
@@ -538,6 +540,11 @@ export interface TranslationResources {
       claudeGuard: {
         blocked: string
         boundary: string
+        chainBoundary: string
+        chainDescription: string
+        chainReady: string
+        chainRoute: string
+        chainWaiting: string
         close: string
         description: string
         disable: string

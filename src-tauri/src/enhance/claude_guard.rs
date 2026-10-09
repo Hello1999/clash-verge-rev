@@ -27,16 +27,32 @@ pub fn enforce(config: &mut Mapping) {
         .cloned()
         .unwrap_or_default();
     proxies.retain(|proxy| proxy.get("name").and_then(Value::as_str) != Some(OUTBOUND));
+    let chain_active = config
+        .get("proxy-groups")
+        .and_then(Value::as_sequence)
+        .is_some_and(|groups| {
+            groups
+                .iter()
+                .any(|group| group.get("name").and_then(Value::as_str) == Some(super::auto_chain::GROUP))
+        });
     let mut gateway = Mapping::new();
     gateway.insert("name".into(), OUTBOUND.into());
-    gateway.insert("type".into(), "http".into());
-    gateway.insert("server".into(), "127.0.0.1".into());
-    gateway.insert("port".into(), GATEWAY_PORT.into());
-    proxies.push(Value::Mapping(gateway));
+    if chain_active {
+        gateway.insert("type".into(), "select".into());
+        gateway.insert("proxies".into(), vec![Value::from(super::auto_chain::GROUP)].into());
+    } else {
+        gateway.insert("type".into(), "http".into());
+        gateway.insert("server".into(), "127.0.0.1".into());
+        gateway.insert("port".into(), GATEWAY_PORT.into());
+        proxies.push(Value::Mapping(gateway.clone()));
+    }
     config.insert("proxies".into(), proxies.into());
 
     if let Some(Value::Sequence(groups)) = config.get_mut("proxy-groups") {
         groups.retain(|group| group.get("name").and_then(Value::as_str) != Some(OUTBOUND));
+        if chain_active {
+            groups.push(gateway.into());
+        }
     }
 
     let mut rules: Vec<Value> = DOMAINS
@@ -146,6 +162,35 @@ mod tests {
             original_rules.as_sequence().expect("rules")
         );
         assert!(rules[0].as_str().expect("rule").contains("NETWORK,UDP"));
+    }
+
+    #[test]
+    fn automatic_chain_carries_both_claude_and_dns_without_the_legacy_gateway() {
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            "proxy-groups:\n- {name: CV Auto Chain, type: select, proxies: [REJECT]}\nproxies:\n- {name: CV Claude Protected, type: http, server: 127.0.0.1, port: 17891}\nrules: ['MATCH,CV Auto Chain']\n"
+        ).expect("fixture");
+        enforce(&mut config);
+        let once = config.clone();
+        enforce(&mut config);
+        assert_eq!(config, once);
+        assert!(config["proxies"].as_sequence().expect("proxies").is_empty());
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"][0].as_str(),
+            Some(super::super::auto_chain::GROUP)
+        );
+        assert_eq!(config["proxy-groups"][0]["proxies"][0].as_str(), Some("REJECT"));
+        for domain in DOMAINS {
+            assert_eq!(
+                config["dns"]["nameserver-policy"][format!("+.{domain}")].as_str(),
+                Some(PROTECTED_DNS)
+            );
+            assert!(
+                config["rules"]
+                    .as_sequence()
+                    .expect("rules")
+                    .contains(&Value::from(format!("DOMAIN-SUFFIX,{domain},{OUTBOUND}")))
+            );
+        }
     }
 
     #[test]

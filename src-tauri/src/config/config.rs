@@ -200,7 +200,13 @@ impl Config {
 
     pub(crate) async fn runtime_config_yaml() -> Result<std::string::String> {
         let runtime = Self::runtime().await;
-        let protect_claude = Self::verge().await.latest_arc().claude_guard_enabled.unwrap_or(false);
+        let profiles = Self::profiles().await.data_arc();
+        let verge = Self::verge().await.latest_arc();
+        let protect_claude = verge.claude_guard_enabled.unwrap_or(false)
+            || verge
+                .auto_chain
+                .as_ref()
+                .is_some_and(|settings| settings.active_for(&profiles));
         AsyncHandler::spawn_blocking(move || {
             let runtime_lastest = runtime.latest_arc();
             let runtime_data = runtime.data_arc();

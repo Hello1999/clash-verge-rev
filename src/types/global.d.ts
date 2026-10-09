@@ -859,7 +859,7 @@ interface IVergeConfig {
     max_latency?: number
     exit_source: string
     exit_name: string
-    target_group: string
+    target_group?: string
     interval: number
     tolerance: number
     url: string

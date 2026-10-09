@@ -17,6 +17,7 @@ pub struct AutoChainSettings {
     pub entry_sources: Option<Vec<String>>,
     pub exit_source: String,
     pub exit_name: String,
+    #[serde(default)]
     pub target_group: String,
     pub interval: u64,
     pub tolerance: u64,
@@ -53,10 +54,7 @@ impl AutoChainSettings {
             url.scheme() == "https" && url.host_str().is_some(),
             "Use an HTTPS health check URL"
         );
-        ensure!(
-            !self.exit_name.is_empty() && !self.target_group.is_empty(),
-            "Choose an exit and a target group"
-        );
+        ensure!(!self.exit_name.is_empty(), "Choose a fixed exit");
         Ok(())
     }
 }
@@ -294,6 +292,7 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
     let mut routes = Vec::new();
     let mut seen = HashSet::new();
     if let Some(exit) = exit {
+        let exit_id = identity(&exit.proxy)?;
         for candidate in &catalog.nodes {
             if !settings.entry_sources.as_ref().is_none_or(|sources| {
                 sources.iter().any(|source| {
@@ -303,13 +302,11 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
                 continue;
             }
             let entry = &candidate.proxy;
-            if entry.contains_key("dialer-proxy")
-                || (entry.get("server") == exit.proxy.get("server") && entry.get("port") == exit.proxy.get("port"))
-            {
+            if entry.contains_key("dialer-proxy") {
                 continue;
             }
             let id = identity(entry)?;
-            if !seen.insert(id.clone()) {
+            if id == exit_id || !seen.insert(id.clone()) {
                 continue;
             }
             let label = entry.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -331,24 +328,6 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
     group.insert("name".into(), GROUP.into());
     group.insert("type".into(), "select".into());
     group.insert("proxies".into(), routes.into());
-    if settings.target_group != "GLOBAL" {
-        let target = groups
-            .iter_mut()
-            .find(|group| group.get("name").and_then(Value::as_str) == Some(settings.target_group.as_str()))
-            .context("The target proxy group no longer exists")?;
-        ensure!(
-            target.get("type").and_then(Value::as_str) == Some("select"),
-            "Choose a manual selection group"
-        );
-        let target = target.as_mapping_mut().context("Invalid target group")?;
-        let members = target
-            .entry(Value::from("proxies"))
-            .or_insert_with(|| Value::Sequence(Vec::new()));
-        members
-            .as_sequence_mut()
-            .context("Invalid target group members")?
-            .insert(0, GROUP.into());
-    }
     groups.push(group.into());
     config.insert("proxies".into(), proxies.into());
     config.insert("proxy-groups".into(), groups.into());
@@ -375,6 +354,91 @@ pub fn without_generated(mut config: Mapping) -> Mapping {
         }
     }
     config
+}
+
+pub fn route_all_proxy_traffic(config: &mut Mapping, selected: &BTreeMap<String, String>) {
+    fn resolve<'a>(
+        name: &'a str,
+        config: &'a Mapping,
+        selected: &'a BTreeMap<String, String>,
+        seen: &mut HashSet<String>,
+    ) -> &'a str {
+        if name == GROUP || matches!(name, "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS") {
+            return name;
+        }
+        if !seen.insert(name.to_owned()) {
+            return GROUP;
+        }
+        if let Some(proxy) = config.get("proxies").and_then(Value::as_sequence).and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("name").and_then(Value::as_str) == Some(name))
+        }) {
+            return match proxy.get("type").and_then(Value::as_str) {
+                Some("direct" | "reject" | "dns")
+                    if !proxy
+                        .as_mapping()
+                        .is_some_and(|proxy| proxy.contains_key("dialer-proxy")) =>
+                {
+                    name
+                }
+                _ => GROUP,
+            };
+        }
+        let group = config
+            .get("proxy-groups")
+            .and_then(Value::as_sequence)
+            .and_then(|groups| {
+                groups
+                    .iter()
+                    .find(|group| group.get("name").and_then(Value::as_str) == Some(name))
+            });
+        if let Some(group) = group
+            && group.get("type").and_then(Value::as_str) == Some("select")
+        {
+            let members = group.get("proxies").and_then(Value::as_sequence);
+            let choice = selected
+                .get(name)
+                .map(String::as_str)
+                .or_else(|| members.and_then(|members| members.first()).and_then(Value::as_str));
+            if let Some(choice) = choice {
+                return resolve(choice, config, selected, seen);
+            }
+        }
+        GROUP
+    }
+
+    fn rewrite(rules: &mut Value, config: &Mapping, selected: &BTreeMap<String, String>) {
+        let Some(rules) = rules.as_sequence_mut() else { return };
+        for rule in rules {
+            let Some(text) = rule.as_str() else { continue };
+            // SUB-RULE names are rule lists, not outbound policies.
+            if text.starts_with("SUB-RULE,") {
+                continue;
+            }
+            let mut fields: Vec<_> = text.split(',').collect();
+            let index = fields
+                .len()
+                .saturating_sub(if fields.last() == Some(&"no-resolve") { 2 } else { 1 });
+            if index == 0 {
+                continue;
+            }
+            let policy = resolve(fields[index].trim(), config, selected, &mut HashSet::new());
+            fields[index] = policy;
+            *rule = fields.join(",").into();
+        }
+    }
+
+    let original = config.clone();
+    if let Some(rules) = config.get_mut("rules") {
+        rewrite(rules, &original, selected);
+    }
+    if let Some(sub_rules) = config.get_mut("sub-rules").and_then(Value::as_mapping_mut) {
+        for rules in sub_rules.values_mut() {
+            rewrite(rules, &original, selected);
+        }
+    }
+    config.insert("mode".into(), "rule".into());
 }
 
 #[cfg(test)]
@@ -419,6 +483,115 @@ mod tests {
     }
 
     #[test]
+    fn shared_endpoint_keeps_distinct_protocols_and_accounts_as_relays() -> Result<()> {
+        let mut config = Mapping::new();
+        let mut catalog = Catalog {
+            nodes: Vec::new(),
+            warnings: Vec::new(),
+        };
+        for (name, kind, credential) in [
+            ("HY2", "hysteria2", "a"),
+            ("Reality", "vless", "b"),
+            ("Exit", "vless", "c"),
+            ("Exit alias", "vless", "c"),
+        ] {
+            catalog.nodes.push(Candidate {
+                source: "ywj".into(),
+                source_label: "ywj".into(),
+                proxy: serde_yaml_ng::from_str(&format!(
+                    "name: {name}\ntype: {kind}\nserver: shared.example\nport: 443\npassword: {credential}\n"
+                ))?,
+            });
+        }
+        let mut settings = settings();
+        settings.exit_source = "ywj".into();
+        settings.exit_name = "Exit".into();
+        settings.entry_sources = Some(vec!["ywj".into()]);
+        build(&mut config, &settings, &catalog)?;
+        let routes = config["proxy-groups"][0]["proxies"].as_sequence().context("routes")?;
+        assert_eq!(
+            routes.len(),
+            3,
+            "Two relays plus REJECT; exclude only the exit and its alias"
+        );
+        assert!(routes[1].as_str().context("route")?.contains("HY2"));
+        assert!(routes[2].as_str().context("route")?.contains("Reality"));
+        for proxy in config["proxies"]
+            .as_sequence()
+            .context("proxies")?
+            .iter()
+            .filter(|proxy| proxy.get("dialer-proxy").is_some())
+        {
+            assert_eq!(proxy["password"].as_str(), Some("c"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unified_rules_preserve_bypasses_and_route_all_proxy_policies() -> Result<()> {
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            r"
+mode: global
+proxies:
+- {name: Exit, type: socks5, server: 127.0.0.1, port: 1080}
+proxy-groups:
+- {name: CV Auto Chain, type: select, proxies: [REJECT]}
+- {name: NCloud, type: select, proxies: [Exit, DIRECT]}
+- {name: Google, type: select, proxies: [NCloud]}
+- {name: ChinaMax, type: select, proxies: [DIRECT, Exit]}
+- {name: Ads, type: select, proxies: [REJECT, Exit]}
+- {name: Provider, type: select, proxies: [DIRECT], use: [subscription]}
+rules:
+- DOMAIN,school.example,DIRECT
+- DOMAIN,ad.example,Ads
+- DOMAIN,china.example,ChinaMax
+- DOMAIN,google.example,Google
+- DOMAIN,provider.example,Provider
+- IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+- RULE-SET,foreign,NCloud,no-resolve
+- AND,((NETWORK,TCP),(DST-PORT,443)),Exit
+- SUB-RULE,(NETWORK,TCP),nested
+- MATCH,NCloud
+sub-rules:
+  nested:
+  - DOMAIN,nested.example,Exit
+  - MATCH,REJECT-DROP
+",
+        )?;
+        let selected = BTreeMap::from([("Provider".into(), "cached-provider-node".into())]);
+        route_all_proxy_traffic(&mut config, &selected);
+        let expected = [
+            "DOMAIN,school.example,DIRECT",
+            "DOMAIN,ad.example,REJECT",
+            "DOMAIN,china.example,DIRECT",
+            "DOMAIN,google.example,CV Auto Chain",
+            "DOMAIN,provider.example,CV Auto Chain",
+            "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+            "RULE-SET,foreign,CV Auto Chain,no-resolve",
+            "AND,((NETWORK,TCP),(DST-PORT,443)),CV Auto Chain",
+            "SUB-RULE,(NETWORK,TCP),nested",
+            "MATCH,CV Auto Chain",
+        ];
+        assert_eq!(
+            config["rules"],
+            Value::from(expected.into_iter().map(Value::from).collect::<Vec<_>>())
+        );
+        assert_eq!(
+            config["sub-rules"]["nested"][0].as_str(),
+            Some("DOMAIN,nested.example,CV Auto Chain")
+        );
+        assert_eq!(config["sub-rules"]["nested"][1].as_str(), Some("MATCH,REJECT-DROP"));
+        assert_eq!(config["mode"].as_str(), Some("rule"));
+        let once = config.clone();
+        route_all_proxy_traffic(&mut config, &selected);
+        assert_eq!(config, once);
+        let mut settings = settings();
+        settings.target_group.clear();
+        settings.validate()?;
+        Ok(())
+    }
+
+    #[test]
     fn measures_each_entry_through_the_same_exit_and_deduplicates() -> Result<()> {
         let (mut config, catalog) = fixture()?;
         build(&mut config, &settings(), &catalog)?;
@@ -445,8 +618,7 @@ mod tests {
             assert_ne!(entry["server"], exit["server"]);
             assert!(entry.get("dialer-proxy").is_none());
         }
-        assert_eq!(groups[0]["proxies"][0].as_str(), Some(GROUP));
-        assert_eq!(groups[0]["proxies"][1].as_str(), Some("DIRECT"));
+        assert_eq!(groups[0]["proxies"][0].as_str(), Some("DIRECT"));
         let mut rebuilt = without_generated(config.clone());
         build(&mut rebuilt, &settings(), &catalog)?;
         assert_eq!(rebuilt, config, "An unchanged catalog must not trigger a reload");

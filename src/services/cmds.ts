@@ -587,7 +587,7 @@ export const getClaudeGuardStatus = () =>
     enabled: boolean
     gateway_reachable: boolean
     exit_verified: boolean
-    expected_exit: string
+    expected_exit: string | null
     reason: string
     domains: string[]
   }>('get_claude_guard_status')

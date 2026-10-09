@@ -203,12 +203,7 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
             })
             .count(),
         total: members.iter().filter(|name| name.as_str() != "REJECT").count(),
-        in_use: mode != "direct"
-            && (mode == "global") == (settings.target_group == "GLOBAL")
-            && proxies
-                .get(&settings.target_group)
-                .and_then(|group| group.now.as_deref())
-                == Some(GROUP),
+        in_use: mode == "rule",
         fixed: false,
         delay: last
             .filter(|_| group.now.as_deref().and_then(state).is_some_and(|state| state.alive))
@@ -220,7 +215,21 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
 #[tauri::command]
 pub async fn get_claude_guard_status() -> CmdResult<serde_json::Value> {
     use crate::enhance::claude_guard::{DOMAINS, EXPECTED_EXIT, GATEWAY_PORT};
-    let enabled = Config::verge().await.data_arc().claude_guard_enabled.unwrap_or(false);
+    let profiles = Config::profiles().await.data_arc();
+    let verge = Config::verge().await.data_arc();
+    if verge
+        .auto_chain
+        .as_ref()
+        .is_some_and(|settings| settings.active_for(&profiles))
+    {
+        let ready = get_auto_chain_status()
+            .await?
+            .is_some_and(|status| status.in_use && status.delay.is_some());
+        return Ok(serde_json::json!({"enabled": true, "automatic_chain": true,
+            "gateway_reachable": ready, "exit_verified": false,
+            "expected_exit": null, "reason": if ready { "chain ready" } else { "chain probing" }, "domains": DOMAINS}));
+    }
+    let enabled = verge.claude_guard_enabled.unwrap_or(false);
     let gateway_reachable = matches!(
         tokio::time::timeout(
             std::time::Duration::from_secs(1),

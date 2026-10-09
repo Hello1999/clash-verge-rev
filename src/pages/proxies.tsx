@@ -5,7 +5,7 @@ import { useCallback, useEffect, useReducer, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { BasePage, TooltipIcon } from '@/components/base'
-import { AutoChain } from '@/components/proxy/auto-chain'
+import { AutoChain, AutoChainCurrent } from '@/components/proxy/auto-chain'
 import { ClaudeGuard } from '@/components/proxy/claude-guard'
 import { ProviderButton } from '@/components/proxy/provider-button'
 import { ProxyGroups } from '@/components/proxy/proxy-groups'
@@ -141,7 +141,11 @@ const ProxyPage = () => {
   return (
     <BasePage
       full
-      contentStyle={{ height: '100%' }}
+      contentStyle={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
       title={
         isChainMode ? (
           <Box
@@ -169,7 +173,10 @@ const ProxyPage = () => {
             {MODES.map((mode) => (
               <Button
                 key={mode}
-                disabled={!!verge?.claude_guard_enabled && mode !== 'rule'}
+                disabled={
+                  (!!verge?.claude_guard_enabled || !!autoChainEnabled) &&
+                  mode !== 'rule'
+                }
                 variant={mode === curMode ? 'contained' : 'outlined'}
                 onClick={() => onChangeMode(mode)}
                 sx={{ textTransform: 'capitalize' }}
@@ -208,11 +215,14 @@ const ProxyPage = () => {
         </Box>
       }
     >
-      <ProxyGroups
-        mode={curMode ?? 'rule'}
-        isChainMode={isChainMode}
-        chainConfigData={chainConfigData}
-      />
+      <AutoChainCurrent />
+      <Box sx={{ flex: 1, minHeight: 0 }}>
+        <ProxyGroups
+          mode={curMode ?? 'rule'}
+          isChainMode={isChainMode}
+          chainConfigData={chainConfigData}
+        />
+      </Box>
     </BasePage>
   )
 }

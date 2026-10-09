@@ -14,6 +14,16 @@ use tokio::sync::MutexGuard;
 pub async fn patch_clash(patch: &Mapping) -> Result<()> {
     let _config_write = Config::lock_config_write().await;
     if let Some(mode) = patch.get("mode").and_then(serde_yaml_ng::Value::as_str) {
+        let profiles = Config::profiles().await.data_arc();
+        let verge = Config::verge().await.latest_arc();
+        if verge
+            .auto_chain
+            .as_ref()
+            .is_some_and(|settings| settings.active_for(&profiles))
+            && mode != "rule"
+        {
+            anyhow::bail!("Automatic chain uses rule mode. Disable it before changing modes.");
+        }
         crate::enhance::claude_guard::check_mode(
             Config::verge().await.latest_arc().claude_guard_enabled.unwrap_or(false),
             mode,
@@ -329,7 +339,7 @@ pub(super) async fn apply_verge_patch_locked(
         let verge_data = verge.data_arc();
         verge_data.save_file().await?;
     }
-    if patch.claude_guard_enabled == Some(true) {
+    if patch.claude_guard_enabled == Some(true) || patch.auto_chain.as_ref().is_some_and(|settings| settings.enabled) {
         handle::Handle::mihomo().close_all_connections().await?;
     }
     Ok(())

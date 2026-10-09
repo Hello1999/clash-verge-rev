@@ -13,48 +13,37 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
-  MenuItem,
   Stack,
   TextField,
   Typography,
 } from '@mui/material'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { selectNodeForGroup } from 'tauri-plugin-mihomo-api'
 
 import { useProfiles } from '@/hooks/use-profiles'
 import { useVerge } from '@/hooks/use-verge'
-import {
-  useAppRefreshers,
-  useClashConfigData,
-  useProxiesData,
-} from '@/providers/app-data-context'
+import { useAppRefreshers } from '@/providers/app-data-context'
 import {
   type AutoChainExit,
   getAutoChainOptions,
   getAutoChainStatus,
-  recordSelectedNode,
 } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import { useQuery } from '@/services/query-client'
 
 import { AutoChainResults } from './auto-chain-results'
 
-const GROUP = 'CV Auto Chain'
 const DEFAULT_URL = 'https://www.gstatic.com/generate_204'
 
 export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const { t } = useTranslation()
   const { verge, patchVerge } = useVerge()
   const { profiles } = useProfiles()
-  const { proxyView } = useProxiesData()
-  const { clashConfig } = useClashConfigData()
-  const { refreshProxy } = useAppRefreshers()
+  const { refreshProxy, refreshClashConfig } = useAppRefreshers()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [exit, setExit] = useState<AutoChainExit | null>(null)
   const [sources, setSources] = useState<string[] | null>(null)
-  const [target, setTarget] = useState('')
   const [interval, setInterval] = useState(15)
   const [tolerance, setTolerance] = useState(50)
   const [maxLatency, setMaxLatency] = useState(1000)
@@ -75,12 +64,6 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   })
   const status = live.data
   const healthy = status?.healthy ?? 0
-  const groups = [
-    ...(clashConfig?.mode === 'global' && proxyView?.global ? ['GLOBAL'] : []),
-    ...(proxyView?.groups
-      .filter((group) => group.type === 'Selector' && group.name !== GROUP)
-      .map((group) => group.name) ?? []),
-  ]
   const savedExit = options.data?.exits.find(
     (node) =>
       node.source === saved?.exit_source && node.name === saved?.exit_name,
@@ -98,13 +81,6 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const show = () => {
     setExit(null)
     setSources(saved?.entry_sources ?? null)
-    setTarget(
-      enabled
-        ? saved.target_group
-        : clashConfig?.mode === 'global'
-          ? 'GLOBAL'
-          : (groups.find((name) => name !== 'GLOBAL') ?? ''),
-    )
     setInterval(saved?.interval ?? 15)
     setTolerance(saved?.tolerance ?? 50)
     setMaxLatency(saved?.max_latency ?? 1000)
@@ -114,8 +90,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   }
 
   const apply = async () => {
-    if (!profiles?.current || !chosenExit || !target || !chosenSources.length)
-      return
+    if (!profiles?.current || !chosenExit || !chosenSources.length) return
     setBusy(true)
     try {
       await patchVerge({
@@ -125,7 +100,6 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
           entry_sources: sources,
           exit_source: chosenExit.source,
           exit_name: chosenExit.name,
-          target_group: target,
           interval,
           tolerance,
           max_latency: maxLatency,
@@ -133,8 +107,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
         },
       })
       onEnabled()
-      await selectNodeForGroup(target, GROUP)
-      await recordSelectedNode(target, GROUP)
+      await refreshClashConfig()
       await refreshProxy()
       await live.refetch()
     } catch (error) {
@@ -149,6 +122,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
     setBusy(true)
     try {
       await patchVerge({ auto_chain: { ...saved, enabled: false } })
+      await refreshClashConfig()
       await refreshProxy()
     } catch (error) {
       showNotice.error(error)
@@ -193,9 +167,6 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                 {t('proxies.autoChain.routeHint')}
               </Typography>
             </Box>
-            {clashConfig?.mode === 'direct' && (
-              <Alert severity="info">{t('proxies.autoChain.directMode')}</Alert>
-            )}
             {enabled && (
               <Alert severity={live.error || !healthy ? 'warning' : 'success'}>
                 <Typography variant="body2">
@@ -203,14 +174,16 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                     ? t('proxies.autoChain.unavailable')
                     : !status?.in_use
                       ? t('proxies.autoChain.notSelected')
-                      : healthy
-                        ? t('proxies.autoChain.running', {
-                            healthy,
-                            total: status?.total ?? 0,
-                          })
-                        : status?.routes.some((route) => !route.checked_at)
-                          ? t('proxies.autoChain.initialScan')
-                          : t('proxies.autoChain.recovering')}
+                      : status?.total === 0
+                        ? t('proxies.autoChain.noCandidates')
+                        : healthy
+                          ? t('proxies.autoChain.running', {
+                              healthy,
+                              total: status?.total ?? 0,
+                            })
+                          : status?.routes.some((route) => !route.checked_at)
+                            ? t('proxies.autoChain.initialScan')
+                            : t('proxies.autoChain.recovering')}
                 </Typography>
                 <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
                   {saved.exit_name}
@@ -295,20 +268,6 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                 />
               )}
             />
-            <TextField
-              select
-              label={t('proxies.autoChain.target')}
-              helperText={t('proxies.autoChain.targetHelp', { group: target })}
-              value={groups.includes(target) ? target : ''}
-              onChange={(event) => setTarget(event.target.value)}
-              disabled={busy}
-            >
-              {groups.map((group) => (
-                <MenuItem key={group} value={group}>
-                  {group}
-                </MenuItem>
-              ))}
-            </TextField>
             {enabled && status && (
               <AutoChainResults
                 routes={status.routes}
@@ -363,7 +322,9 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                     label={t('proxies.autoChain.maxLatency')}
                     helperText={t('proxies.autoChain.maxLatencyHelp')}
                     value={maxLatency}
-                    onChange={(event) => setMaxLatency(Number(event.target.value))}
+                    onChange={(event) =>
+                      setMaxLatency(Number(event.target.value))
+                    }
                     disabled={busy}
                     slotProps={{ htmlInput: { min: 200, max: 5000 } }}
                   />
@@ -400,9 +361,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
               busy ||
               !chosenExit ||
               !chosenSources.length ||
-              !target ||
               !profiles?.current ||
-              clashConfig?.mode === 'direct' ||
               interval < 5 ||
               interval > 300 ||
               tolerance < 0 ||
@@ -419,5 +378,79 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
         </DialogActions>
       </Dialog>
     </>
+  )
+}
+
+export const AutoChainCurrent = () => {
+  const { t } = useTranslation()
+  const { verge } = useVerge()
+  const { profiles } = useProfiles()
+  const saved = verge?.auto_chain
+  const enabled = !!saved?.enabled && saved.profile_uid === profiles?.current
+  const live = useQuery({
+    queryKey: ['autoChainStatus'],
+    queryFn: getAutoChainStatus,
+    enabled,
+    refetchInterval: 3000,
+  })
+  if (!enabled) return null
+  const status = live.data
+  const relay = status?.selected
+    ?.replace('CV Chain / ', '')
+    .replace(/ \/ [a-f0-9]{12}$/, '')
+  return (
+    <Box
+      sx={{
+        mx: 2,
+        mt: 1,
+        mb: 1,
+        p: 1.5,
+        border: 1,
+        borderColor: 'divider',
+        borderRadius: 1,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        flexShrink: 0,
+      }}
+    >
+      <AltRouteRounded color="primary" />
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography variant="subtitle2">
+          {t('proxies.autoChain.currentChain')}
+        </Typography>
+        <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+          {relay && relay !== 'REJECT'
+            ? `${relay} → ${saved.exit_name}`
+            : saved.exit_name}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {live.error
+            ? t('proxies.autoChain.unavailable')
+            : !status
+              ? t('proxies.autoChain.initialScan')
+              : status.total === 0
+                ? t('proxies.autoChain.noCandidates')
+                : status.delay
+                  ? t('proxies.autoChain.running', {
+                      healthy: status.healthy,
+                      total: status.total,
+                    })
+                  : t('proxies.autoChain.recovering')}
+          {status?.checked_at &&
+            ` · ${new Date(status.checked_at).toLocaleTimeString()}`}
+        </Typography>
+      </Box>
+      <Typography
+        sx={{
+          whiteSpace: 'nowrap',
+          color:
+            !live.error && status?.delay ? 'success.main' : 'text.secondary',
+          fontWeight: 600,
+        }}
+      >
+        {!live.error && status?.delay ? `${status.delay} ms` : '—'}
+      </Typography>
+    </Box>
   )
 }
