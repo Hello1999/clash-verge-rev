@@ -460,11 +460,23 @@ mod tests {
         let mut settings = settings();
         settings.entry_sources = Some(vec!["a".into(), "b".into()]);
         build(&mut config, &settings, &catalog)?;
-        assert_eq!(config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(), 3);
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"]
+                .as_sequence()
+                .context("Expected generated proxy list")?
+                .len(),
+            3
+        );
         settings.entry_sources = Some(vec!["a".into()]);
         let mut config = without_generated(config);
         build(&mut config, &settings, &catalog)?;
-        assert_eq!(config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(), 2);
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"]
+                .as_sequence()
+                .context("Expected generated proxy list")?
+                .len(),
+            2
+        );
         assert_eq!(config["proxies"][0]["server"].as_str(), Some("entry-a.example"));
         assert_eq!(config["proxies"][1]["server"].as_str(), Some("exit.example"));
         settings.entry_sources = Some(vec![]);
@@ -480,11 +492,17 @@ mod tests {
     fn all_subscriptions_include_new_sources_and_legacy_settings_load() -> Result<()> {
         let (mut config, mut catalog) = fixture()?;
         let mut legacy = serde_json::to_value(settings())?;
-        legacy.as_object_mut().unwrap().remove("max_latency");
+        legacy
+            .as_object_mut()
+            .context("Expected serialized settings object")?
+            .remove("max_latency");
         let settings: AutoChainSettings = serde_json::from_value(legacy)?;
         assert_eq!(settings.max_latency, 1000);
         build(&mut config, &settings, &catalog)?;
-        let count = config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len();
+        let count = config["proxy-groups"][1]["proxies"]
+            .as_sequence()
+            .context("Expected generated proxy list")?
+            .len();
         catalog.nodes.push(Candidate {
             source: "new-subscription".into(),
             source_label: "New".into(),
@@ -493,7 +511,10 @@ mod tests {
         let mut config = without_generated(config);
         build(&mut config, &settings, &catalog)?;
         assert_eq!(
-            config["proxy-groups"][1]["proxies"].as_sequence().unwrap().len(),
+            config["proxy-groups"][1]["proxies"]
+                .as_sequence()
+                .context("Expected generated proxy list")?
+                .len(),
             count + 1
         );
         Ok(())

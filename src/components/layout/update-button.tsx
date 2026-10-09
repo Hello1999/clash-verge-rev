@@ -3,6 +3,7 @@ import { useRef } from 'react'
 
 import { DialogRef } from '@/components/base'
 import { useUpdate } from '@/hooks/use-update'
+import { useVerge } from '@/hooks/use-verge'
 
 import { UpdateViewer } from '../setting/mods/update-viewer'
 
@@ -15,8 +16,9 @@ export const UpdateButton = (props: Props) => {
   const viewerRef = useRef<DialogRef>(null)
 
   const { updateInfo } = useUpdate()
+  const { verge } = useVerge()
 
-  if (!updateInfo?.available) return null
+  if (!verge?.auto_check_update || !updateInfo?.available) return null
 
   return (
     <>

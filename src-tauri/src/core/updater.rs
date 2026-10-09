@@ -150,6 +150,10 @@ fn nsis_language_id(app_language: &str) -> &'static str {
 impl SilentUpdater {
     /// Installs a newer cached update before normal startup, if the user confirms.
     pub async fn try_install_on_startup(&self, app_handle: &tauri::AppHandle) -> bool {
+        if !Config::verge().await.latest_arc().auto_check_update.unwrap_or(false) {
+            return false;
+        }
+
         let current_version = env!("CARGO_PKG_VERSION");
 
         let meta = match Self::read_cache_meta() {
@@ -410,7 +414,7 @@ impl SilentUpdater {
 
 impl SilentUpdater {
     async fn check_and_download(&self, app_handle: &tauri::AppHandle) -> Result<()> {
-        let auto_check = Config::verge().await.latest_arc().auto_check_update.unwrap_or(true);
+        let auto_check = Config::verge().await.latest_arc().auto_check_update.unwrap_or(false);
         if !auto_check {
             logging!(debug, Type::System, "Silent update skipped: auto_check_update is false");
             return Ok(());
