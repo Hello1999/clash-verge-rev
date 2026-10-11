@@ -1,0 +1,6 @@
+original-service-resources/
+package-inspection/
+*.exe
+*.pdb
+*.zip
+SHA256.txt

@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "src-tauri",
+  "vendor/clash-verge-service-ipc",
   "crates/clash-verge-draft",
   "crates/clash-verge-media-unlock",
   "crates/clash-verge-logging",

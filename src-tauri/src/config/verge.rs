@@ -314,6 +314,13 @@ impl IVerge {
                     {
                         config.start_page = Some(String::from("/"));
                     }
+                    if cfg!(target_os = "windows") {
+                        config.claude_guard_enabled = Some(true);
+                        config.system_proxy_bypass = Some(crate::enhance::local_access::system_bypass(
+                            config.system_proxy_bypass.as_deref().unwrap_or(""),
+                        ).into());
+                        config.use_default_bypass = Some(false);
+                    }
                     config
                 }
                 Err(err) => {
@@ -330,6 +337,7 @@ impl IVerge {
 
     pub fn template() -> Self {
         Self {
+            claude_guard_enabled: Some(cfg!(target_os = "windows")),
             app_log_max_size: Some(128),
             app_log_max_count: Some(8),
             clash_core: Some("verge-mihomo".into()),

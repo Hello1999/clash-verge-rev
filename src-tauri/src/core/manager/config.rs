@@ -133,7 +133,10 @@ impl CoreManager {
         use crate::constants::files::RUNTIME_CONFIG;
 
         let runtime_path = dirs::app_home_dir()?.join(RUNTIME_CONFIG);
-        let clash_config = &Config::clash().await.latest_arc().0;
+        let mut clash_config = Config::clash().await.latest_arc().0.clone();
+        if crate::enhance::claude_guard::enabled(Config::verge().await.latest_arc().claude_guard_enabled) {
+            crate::enhance::claude_guard::enforce(&mut clash_config);
+        }
 
         Config::runtime().await.edit_draft(|d| {
             *d = IRuntime {

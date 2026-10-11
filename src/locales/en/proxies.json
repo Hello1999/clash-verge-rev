@@ -174,22 +174,17 @@
   },
   "claudeGuard": {
     "title": "Claude exit protection",
-    "description": "Connections and Clash DNS queries for the listed Claude domains use your fixed-exit gateway. DNS is encrypted and fails without falling back to ordinary resolvers. Other domains keep their existing routing.",
-    "route": "Chrome / Edge → Clash → protection gateway → 103.5.250.92 → Claude",
-    "verified": "Gateway recently verified the .92 exit",
-    "blocked": "Gateway unavailable or exit not verified. Protected requests may be blocked.",
+    "description": "Claude processes and the listed domains prefer JP-REALITY-SOCKS, whose server supplies the fixed exit. Existing .92 SOCKS exits remain supported when this node is absent. Other sites keep their routing.",
+    "route": "Claude / DNS → protected exit group → JP-REALITY-SOCKS or fixed .92 SOCKS → destination",
+    "verified": "Fixed-exit candidates loaded. Public egress and OS filtering have not been attested.",
+    "blocked": "Fixed exit missing or core unavailable. Claude cannot fall back to other exits.",
     "enabled": "Protected routing enabled",
     "disabled": "Protected routing disabled",
-    "boundary": "Requires the local gateway on port 17891. System DNS, browser DNS policies and firewall rules must be installed separately to cover traffic outside Clash. Unknown third-party domains are not covered.",
-    "mode": "Protection locks rule mode across subscriptions. Enabling it closes existing proxy connections so they reconnect through the new rules.",
+    "boundary": "No port 17891 gateway required. System bypass prevention needs separately installed and verified filters. This page does not attest those filters. Unknown third-party domains are outside domain routing coverage.",
+    "mode": "Windows protection requires rule mode across profiles. LAN requests go through local Clash and then DIRECT; localhost remains accessible. A missing protected exit blocks Claude.",
     "domains": "Protected domains (including subdomains)",
     "enable": "Enable protection",
     "disable": "Disable protection",
-    "close": "Close",
-    "chainDescription": "Automatic chain includes Claude protection: connections and encrypted protected-domain DNS use the same fixed exit without fallback.",
-    "chainRoute": "Claude / DNS → automatic relay → {{exit}}",
-    "chainReady": "The automatic chain is available and carries Claude protection.",
-    "chainWaiting": "Testing or recovering the chain. Claude traffic remains blocked without direct fallback.",
-    "chainBoundary": "Protection stays active while automatic chain is enabled and does not use the legacy local gateway. It covers connections and DNS handled by Clash, not every application’s system DNS."
+    "close": "Close"
   }
 }

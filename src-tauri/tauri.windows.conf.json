@@ -1,7 +1,24 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "identifier": "io.github.clash-verge-rev.clash-verge-rev",
+  "productName": "Clash Verge Auto Chain",
+  "version": "2.5.12",
+  "mainBinaryName": "clash-verge-auto-chain",
+  "identifier": "io.github.hello1999.clash-verge-auto-chain",
   "bundle": {
+    "publisher": "Clash Verge Auto Chain",
+    "shortDescription": "Clash Verge Auto Chain",
+    "longDescription": "Personal Windows build with automatic proxy chaining and an independent application identity.",
+    "resources": [
+      "resources/ASN.mmdb",
+      "resources/Country.mmdb",
+      "resources/geoip.dat",
+      "resources/geosite.dat",
+      "resources/enableLoopback.exe",
+      "resources/clash-verge-service-auto-chain.exe",
+      "resources/clash-verge-service-install.exe",
+      "resources/clash-verge-service-uninstall.exe"
+    ],
+    "createUpdaterArtifacts": false,
     "targets": ["nsis"],
     "windows": {
       "certificateThumbprint": null,
@@ -18,6 +35,16 @@
         "installMode": "perMachine",
         "installerHooks": "./packages/windows/core-hashes.nsh",
         "template": "./packages/windows/installer.nsi"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["clash-verge-auto-chain"]
       }
     }
   },

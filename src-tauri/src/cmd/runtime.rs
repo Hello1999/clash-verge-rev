@@ -203,8 +203,13 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
             })
             .count(),
         total: members.iter().filter(|name| name.as_str() != "REJECT").count(),
-        in_use: mode == "rule",
-        fixed: false,
+        in_use: mode != "direct"
+            && (mode == "global") == (settings.target_group == "GLOBAL")
+            && proxies
+                .get(&settings.target_group)
+                .and_then(|group| group.now.as_deref())
+                == Some(GROUP),
+        fixed: group.fixed.as_ref().is_some_and(|fixed| !fixed.is_empty()),
         delay: last
             .filter(|_| group.now.as_deref().and_then(state).is_some_and(|state| state.alive))
             .map(|sample| sample.delay),
@@ -214,51 +219,30 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
 
 #[tauri::command]
 pub async fn get_claude_guard_status() -> CmdResult<serde_json::Value> {
-    use crate::enhance::claude_guard::{DOMAINS, EXPECTED_EXIT, GATEWAY_PORT};
-    let profiles = Config::profiles().await.data_arc();
-    let verge = Config::verge().await.data_arc();
-    if verge
-        .auto_chain
+    use crate::enhance::claude_guard::{self, DOMAINS, EXPECTED_EXIT, OUTBOUND};
+    let enabled = claude_guard::enabled(Config::verge().await.data_arc().claude_guard_enabled);
+    let runtime = Config::runtime().await.data_arc();
+    let routes: Vec<_> = runtime
+        .config
         .as_ref()
-        .is_some_and(|settings| settings.active_for(&profiles))
-    {
-        let ready = get_auto_chain_status()
-            .await?
-            .is_some_and(|status| status.in_use && status.delay.is_some());
-        return Ok(serde_json::json!({"enabled": true, "automatic_chain": true,
-            "gateway_reachable": ready, "exit_verified": false,
-            "expected_exit": null, "reason": if ready { "chain ready" } else { "chain probing" }, "domains": DOMAINS}));
-    }
-    let enabled = verge.claude_guard_enabled.unwrap_or(false);
-    let gateway_reachable = matches!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            tokio::net::TcpStream::connect(("127.0.0.1", GATEWAY_PORT))
-        )
-        .await,
-        Ok(Ok(_))
-    );
-    let mut verified = false;
-    let mut reason = "status unavailable".to_owned();
-    if let Some(home) = ::dirs::home_dir() {
-        let path = home.join("ClaudeNetworkGuard/status.json");
-        if let Ok(bytes) = tokio::fs::read(path).await
-            && let Ok(status) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            let age = now - status["last_ok_unix"].as_f64().unwrap_or(0.0);
-            verified = gateway_reachable
-                && status["allowed"] == true
-                && status["expected"] == EXPECTED_EXIT
-                && (0.0..=12.0).contains(&age);
-            reason = status["reason"].as_str().unwrap_or("unknown").to_owned();
-        }
-    }
-    Ok(
-        serde_json::json!({"enabled": enabled, "gateway_reachable": gateway_reachable,
-        "exit_verified": verified, "expected_exit": EXPECTED_EXIT, "reason": reason, "domains": DOMAINS}),
-    )
+        .and_then(|c| c.get("proxies"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|p| claude_guard::is_fixed_exit(p))
+        .filter_map(|p| p.get("name").and_then(serde_yaml_ng::Value::as_str))
+        .collect();
+    let live = crate::core::handle::Handle::mihomo().get_proxies().await.ok();
+    let members = live
+        .as_ref()
+        .and_then(|p| p.proxies.get(OUTBOUND))
+        .and_then(|p| p.all.as_ref());
+    let routing_ready = enabled
+        && members.is_some_and(|names| !names.is_empty() && names.iter().all(|name| routes.contains(&name.as_str())));
+    Ok(serde_json::json!({
+        "enabled": enabled, "locked": cfg!(target_os = "windows"),
+        "routing_ready": routing_ready, "exit_verified": false,
+        "expected_exit": EXPECTED_EXIT, "domains": DOMAINS,
+        "system_filter_verified": false
+    }))
 }

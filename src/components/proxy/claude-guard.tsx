@@ -12,7 +12,6 @@ import {
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { useProfiles } from '@/hooks/use-profiles'
 import { useVerge } from '@/hooks/use-verge'
 import { useAppRefreshers } from '@/providers/app-data-context'
 import { getClaudeGuardStatus } from '@/services/cmds'
@@ -25,11 +24,7 @@ export const ClaudeGuard = () => {
   const { refreshClashConfig, refreshProxy } = useAppRefreshers()
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const { profiles } = useProfiles()
-  const chainActive =
-    !!verge?.auto_chain?.enabled &&
-    verge.auto_chain.profile_uid === profiles?.current
-  const enabled = chainActive || !!verge?.claude_guard_enabled
+  const enabled = !!verge?.claude_guard_enabled
   const status = useQuery({
     queryKey: ['claudeGuardStatus'],
     queryFn: getClaudeGuardStatus,
@@ -69,13 +64,7 @@ export const ClaudeGuard = () => {
         <DialogTitle>{t('proxies.claudeGuard.title')}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
-            <Typography>
-              {t(
-                chainActive
-                  ? 'proxies.claudeGuard.chainDescription'
-                  : 'proxies.claudeGuard.description',
-              )}
-            </Typography>
+            <Typography>{t('proxies.claudeGuard.description')}</Typography>
             <Alert severity={enabled ? 'info' : 'warning'}>
               {t(
                 enabled
@@ -84,31 +73,13 @@ export const ClaudeGuard = () => {
               )}
             </Alert>
             <Typography variant="body2">
-              {chainActive
-                ? t('proxies.claudeGuard.chainRoute', {
-                    exit: verge?.auto_chain?.exit_name,
-                  })
-                : t('proxies.claudeGuard.route')}
+              {t('proxies.claudeGuard.route')}
             </Typography>
-            <Alert
-              severity={
-                (
-                  chainActive
-                    ? status.data?.gateway_reachable
-                    : status.data?.exit_verified
-                )
-                  ? 'success'
-                  : 'warning'
-              }
-            >
+            <Alert severity={status.data?.routing_ready ? 'info' : 'warning'}>
               {t(
-                chainActive
-                  ? status.data?.gateway_reachable
-                    ? 'proxies.claudeGuard.chainReady'
-                    : 'proxies.claudeGuard.chainWaiting'
-                  : status.data?.exit_verified
-                    ? 'proxies.claudeGuard.verified'
-                    : 'proxies.claudeGuard.blocked',
+                status.data?.routing_ready
+                  ? 'proxies.claudeGuard.verified'
+                  : 'proxies.claudeGuard.blocked',
               )}
             </Alert>
             <Typography variant="body2">
@@ -120,20 +91,14 @@ export const ClaudeGuard = () => {
             <Typography variant="body2">
               {status.data?.domains.join(' · ')}
             </Typography>
-            <Alert severity="info">
-              {t(
-                chainActive
-                  ? 'proxies.claudeGuard.chainBoundary'
-                  : 'proxies.claudeGuard.boundary',
-              )}
-            </Alert>
+            <Alert severity="info">{t('proxies.claudeGuard.boundary')}</Alert>
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button disabled={busy} onClick={() => setOpen(false)}>
             {t('proxies.claudeGuard.close')}
           </Button>
-          {!chainActive && (
+          {!status.data?.locked && (
             <Button
               disabled={busy}
               variant="contained"

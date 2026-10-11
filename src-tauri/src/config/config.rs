@@ -202,7 +202,7 @@ impl Config {
         let runtime = Self::runtime().await;
         let profiles = Self::profiles().await.data_arc();
         let verge = Self::verge().await.latest_arc();
-        let protect_claude = verge.claude_guard_enabled.unwrap_or(false)
+        let protect_claude = enhance::claude_guard::enabled(verge.claude_guard_enabled)
             || verge
                 .auto_chain
                 .as_ref()

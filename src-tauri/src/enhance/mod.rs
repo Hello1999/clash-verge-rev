@@ -1,6 +1,7 @@
 pub mod auto_chain;
 mod chain;
 pub mod claude_guard;
+pub mod local_access;
 pub mod field;
 mod merge;
 mod script;
@@ -971,22 +972,8 @@ pub async fn enhance(
     {
         let catalog = auto_chain::collect(profiles, &config).await?;
         auto_chain::build(&mut config, &settings, &catalog)?;
-        let selected = profiles
-            .items
-            .as_ref()
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find(|item| item.uid.as_deref() == profiles.current.as_deref())
-            })
-            .and_then(|item| item.selected.as_ref())
-            .into_iter()
-            .flatten()
-            .filter_map(|item| Some((item.name.as_ref()?.to_string(), item.now.as_ref()?.to_string())))
-            .collect();
-        auto_chain::route_all_proxy_traffic(&mut config, &selected);
         claude_guard::enforce(&mut config);
-    } else if Config::verge().await.latest_arc().claude_guard_enabled.unwrap_or(false) {
+    } else if claude_guard::enabled(Config::verge().await.latest_arc().claude_guard_enabled) {
         claude_guard::enforce(&mut config);
     }
     let config = cleanup_proxy_groups(config);

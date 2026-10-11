@@ -174,22 +174,17 @@
   },
   "claudeGuard": {
     "title": "Claude 出口保護",
-    "description": "下列 Claude 網域的連線及 Clash 內部 DNS 查詢均經過固定出口閘道。DNS 加密傳輸，失敗不回退普通解析伺服器；其他網域保留原有分流。",
-    "route": "Chrome / Edge → Clash → 保護閘道 → 103.5.250.92 → Claude",
-    "verified": "閘道最近已驗證 .92 出口",
-    "blocked": "閘道無法使用或出口尚未驗證，受保護連線可能被阻擋。",
+    "description": "Claude 程序及下列網域優先使用 JP-REALITY-SOCKS，由伺服器提供固定出口。該節點不存在時仍支援既有的 .92 SOCKS 出口，其他網站保留原分流規則。",
+    "route": "Claude / DNS → 保護出口群組 → JP-REALITY-SOCKS 或固定 .92 SOCKS → 目標服務",
+    "verified": "固定出口候選已載入；這不是公網出口或系統防繞過的實測證明。",
+    "blocked": "固定出口未載入或核心無法使用。Claude 流量拒絕回退其他節點。",
     "enabled": "固定保護路由已啟用",
     "disabled": "固定保護路由未啟用",
-    "boundary": "需要本機 17891 連接埠的保護閘道。系統 DNS、瀏覽器 DNS 策略和防火牆需另行設定，才能涵蓋未經過 Clash 的流量；不涵蓋未知的第三方網域。",
-    "mode": "啟用後鎖定規則模式，對所有訂閱生效。啟用時會關閉既有代理連線，讓它們依新規則重新連線。",
+    "boundary": "不需要 17891 閘道。瀏覽器及 Claude 的系統防繞過需要另外安裝並驗收過濾規則；此頁不宣稱過濾已生效。未知第三方網域不在網域保護範圍。",
+    "mode": "Windows 保護固定使用規則模式。區域網路請求經本機 Clash 後直連，localhost 保持可用；沒有受保護出口時阻擋 Claude。",
     "domains": "保護網域（包含子網域）",
     "enable": "啟用保護",
     "disable": "停用保護",
-    "close": "關閉",
-    "chainDescription": "自動鏈路已包含 Claude 保護：連接和受保護網域的加密 DNS 查詢使用相同的固定出口，失敗不回退。",
-    "chainRoute": "Claude / DNS → 自動中轉 → {{exit}}",
-    "chainReady": "自動鏈路可用，Claude 保護隨鏈路生效。",
-    "chainWaiting": "鏈路正在偵測或恢復，Claude 流量保持阻斷，不回退直連。",
-    "chainBoundary": "自動鏈路啟用期間保護始終生效；此處不再使用舊的本機保護閘道。保護範圍是經過 Clash 的連接和 DNS 查詢，不代表所有應用程式的系統 DNS 都已接管。"
+    "close": "關閉"
   }
 }

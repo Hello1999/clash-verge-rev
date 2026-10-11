@@ -20,6 +20,8 @@
 
 **🖥️ Windows**
 
+- Fix Claude protection for `JP-REALITY-SOCKS` across profile refreshes and restarts without falling back to ordinary nodes.
+- Fix LAN access with browser protection enabled while keeping localhost access and Claude routing protected.
 - 修复 Windows 部分未安装服务的用户以普通权限运行时，内核无法启动的问题
 - 修复 Windows 系统隔离权限被误判，导致服务模式和 TUN 无法使用的问题
 - 修复 Windows 旧版服务状态残留导致无法重装的问题，自动备份可识别的残留并恢复安装

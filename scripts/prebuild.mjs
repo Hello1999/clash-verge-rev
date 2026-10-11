@@ -556,7 +556,10 @@ function serviceFileInfo(name) {
   const suffix = platform === 'linux' ? `-${SIDECAR_HOST}` : ''
   return {
     sourceFile: `${name}${ext}`,
-    targetFile: `${name}${suffix}${ext}`,
+    targetFile:
+      platform === 'win32' && name === 'clash-verge-service'
+        ? 'clash-verge-service-auto-chain.exe'
+        : `${name}${suffix}${ext}`,
   }
 }
 
@@ -607,6 +610,8 @@ async function resolveServiceBundle() {
         '--features',
         'standalone,client',
         '--bins',
+        '--jobs',
+        '2',
       ],
       { stdio: 'inherit' },
     )

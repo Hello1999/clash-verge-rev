@@ -287,7 +287,12 @@ async fn get_bypass() -> String {
     let use_default = verge.use_default_bypass.unwrap_or(true);
     let custom_bypass = verge.system_proxy_bypass.as_deref().unwrap_or("");
 
-    format_bypass(use_default, custom_bypass)
+    let bypass = format_bypass(use_default, custom_bypass);
+    if cfg!(target_os = "windows") {
+        crate::enhance::local_access::system_bypass(&bypass).into()
+    } else {
+        bypass
+    }
 }
 
 singleton!(Sysopt, SYSOPT);

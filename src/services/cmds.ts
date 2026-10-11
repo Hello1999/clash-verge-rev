@@ -585,9 +585,10 @@ export const saveProxyPorts = async (settings: ProxyPortSettings) => {
 export const getClaudeGuardStatus = () =>
   invoke<{
     enabled: boolean
-    gateway_reachable: boolean
+    routing_ready: boolean
+    locked: boolean
+    system_filter_verified: boolean
     exit_verified: boolean
     expected_exit: string | null
-    reason: string
     domains: string[]
   }>('get_claude_guard_status')

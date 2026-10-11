@@ -45,7 +45,7 @@ pub async fn patch_clash_mode(payload: String) -> CmdResult {
 pub async fn get_clash_mode() -> CmdResult<Option<String>> {
     let profiles = Config::profiles().await.data_arc();
     let verge = Config::verge().await.data_arc();
-    if verge.claude_guard_enabled.unwrap_or(false)
+    if crate::enhance::claude_guard::enabled(verge.claude_guard_enabled)
         || verge
             .auto_chain
             .as_ref()

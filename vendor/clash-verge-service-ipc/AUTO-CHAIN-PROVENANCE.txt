@@ -1,0 +1,9 @@
+Vendored from https://github.com/clash-verge-rev/clash-verge-service-ipc
+Upstream tag: v2.7.4
+Source checkout revision prefix: b4f66bd
+Original GPL license and authors retained in LICENSE and Cargo.toml.
+
+Personal Windows fork changes: separate service identity, pipe names, persistent
+state root, execution lock, and service executable name for Clash Verge Auto Chain.
+This directory does not implement Claude egress protection by itself.
+Do not replace these binaries with unmodified upstream prebuilt service binaries.
