@@ -73,4 +73,3 @@ try {
 Test-Delivery $hostAddress 'tcp' $true
 Test-Delivery $hostAddress 'udp' $true
 Write-Output 'LOCAL_SERVICES_KERNEL_PASS: 12 checks; isolated probe filters removed.'
-
