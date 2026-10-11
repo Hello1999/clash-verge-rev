@@ -74,7 +74,13 @@ if ($Action -eq 'Install') {
     Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
 }
 
-$mutex = [Threading.Mutex]::new($false, 'Global\ClashVergeAutoChainClaudeGuard')
+$mutexSecurity = [Security.AccessControl.MutexSecurity]::new()
+foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+    $identity = [Security.Principal.SecurityIdentifier]::new($sid)
+    $mutexSecurity.AddAccessRule([Security.AccessControl.MutexAccessRule]::new($identity, 'FullControl', 'Allow'))
+}
+$created = $false
+$mutex = [Threading.Mutex]::new($false, 'Global\ClashVergeAutoChainClaudeGuard', [ref]$created, $mutexSecurity)
 $locked = $false
 try {
     try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
