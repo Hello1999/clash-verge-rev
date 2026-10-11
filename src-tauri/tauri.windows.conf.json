@@ -1,9 +1,12 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Clash Verge Auto Chain",
-  "version": "2.5.13",
+  "version": "2.5.14",
   "mainBinaryName": "clash-verge-auto-chain",
   "identifier": "io.github.hello1999.clash-verge-auto-chain",
+  "build": {
+    "beforeBuildCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File src-tauri/packages/windows/claude-guard/build.ps1 && pnpm run web:build"
+  },
   "bundle": {
     "publisher": "Clash Verge Auto Chain",
     "shortDescription": "Clash Verge Auto Chain",
@@ -16,7 +19,9 @@
       "resources/enableLoopback.exe",
       "resources/clash-verge-service-auto-chain.exe",
       "resources/clash-verge-service-install.exe",
-      "resources/clash-verge-service-uninstall.exe"
+      "resources/clash-verge-service-uninstall.exe",
+      "resources/claude-guard-manager.exe",
+      "packages/windows/claude-guard/reconcile.ps1"
     ],
     "createUpdaterArtifacts": false,
     "targets": ["nsis"],

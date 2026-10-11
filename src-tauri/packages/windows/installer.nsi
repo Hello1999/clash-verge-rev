@@ -712,6 +712,12 @@ FunctionEnd
 !macroend
 
 !macro RemoveAutoChainService
+  nsExec::ExecToLog '"$WINDIR\SysNative\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\packages\windows\claude-guard\reconcile.ps1" -Action Uninstall'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_OK|MB_ICONSTOP "Could not remove the Auto Chain Claude guard task ($0). Uninstall stopped."
+    Abort
+  ${EndIf}
   nsExec::ExecToLog '"$INSTDIR\resources\clash-verge-service-uninstall.exe"'
   Pop $0
   ${If} $0 != 0
@@ -1014,6 +1020,12 @@ Section Install
   !endif
   !ifdef AUTO_CHAIN_PACKAGE
     !insertmacro InstallAutoChainService
+    nsExec::ExecToLog '"$WINDIR\SysNative\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\packages\windows\claude-guard\reconcile.ps1" -Action Install'
+    Pop $0
+    ${If} $0 != 0
+      MessageBox MB_OK|MB_ICONSTOP "Auto Chain Claude guard setup failed ($0). Protection for new Claude versions is not confirmed. Run this installer again to repair it."
+      Abort
+    ${EndIf}
   !endif
 
   ; Create file associations

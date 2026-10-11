@@ -20,6 +20,7 @@
 
 **🖥️ Windows**
 
+- Fix direct-access protection for updated Claude versions and automatically cover new installation paths.
 - Fix browser connectivity when enabling the system proxy fails with error `0x80070057`.
 - Fix Claude protection for `JP-REALITY-SOCKS` across profile refreshes and restarts without falling back to ordinary nodes.
 - Fix LAN access with browser protection enabled while keeping localhost access and Claude routing protected.

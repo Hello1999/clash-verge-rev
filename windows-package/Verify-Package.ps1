@@ -15,6 +15,7 @@ foreach ($forbidden in @('clash-verge.exe', 'clash-verge-service.exe', 'wfp-mana
 }
 $expected = @{
     'clash-verge-auto-chain.exe' = 'target\release\clash-verge-auto-chain.exe'
+    'claude-guard-manager.exe' = 'src-tauri\resources\claude-guard-manager.exe'
     'clash-verge-service-auto-chain.exe' = 'src-tauri\resources\clash-verge-service-auto-chain.exe'
     'clash-verge-service-install.exe' = 'src-tauri\resources\clash-verge-service-install.exe'
     'clash-verge-service-uninstall.exe' = 'src-tauri\resources\clash-verge-service-uninstall.exe'
@@ -45,6 +46,10 @@ foreach ($entry in $expected.GetEnumerator()) {
     if ($sourceHash -ne $packageHash) { throw "Payload hash mismatch: $($entry.Key)" }
 }
 $main = @($files | Where-Object Name -eq 'clash-verge-auto-chain.exe')[0]
+$guardScript = @($files | Where-Object Name -eq 'reconcile.ps1')
+if ($guardScript.Count -ne 1) { throw 'Expected exactly one Claude guard task script' }
+$guardSource = Join-Path $root 'src-tauri\packages\windows\claude-guard\reconcile.ps1'
+if ((Get-FileHash $guardScript[0].FullName).Hash -ne (Get-FileHash $guardSource).Hash) { throw 'Claude guard script hash mismatch' }
 $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($main.FullName)
 if ($info.ProductName -ne 'Clash Verge Auto Chain') { throw 'Incorrect executable product identity' }
 [pscustomobject]@{
@@ -55,7 +60,7 @@ if ($info.ProductName -ne 'Clash Verge Auto Chain') { throw 'Incorrect executabl
     ProductVersion=$info.ProductVersion
     VerifiedExecutables=$expected.Count
     PayloadFiles=$files.Count
-    ExperimentalGuardBundled=$false
+    ClaudeGuardBundled=$true
     UserConfigurationBundled=$false
     InstallerExecuted=$false
     ExtractedTo=$inspection
