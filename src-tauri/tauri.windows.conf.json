@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Clash Verge Auto Chain",
-  "version": "2.5.12",
+  "version": "2.5.13",
   "mainBinaryName": "clash-verge-auto-chain",
   "identifier": "io.github.hello1999.clash-verge-auto-chain",
   "bundle": {

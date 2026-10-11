@@ -20,6 +20,7 @@
 
 **🖥️ Windows**
 
+- Fix browser connectivity when enabling the system proxy fails with error `0x80070057`.
 - Fix Claude protection for `JP-REALITY-SOCKS` across profile refreshes and restarts without falling back to ordinary nodes.
 - Fix LAN access with browser protection enabled while keeping localhost access and Claude routing protected.
 - 修复 Windows 部分未安装服务的用户以普通权限运行时，内核无法启动的问题

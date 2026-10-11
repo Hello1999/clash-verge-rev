@@ -15,10 +15,14 @@ pub const RULES: &[&str] = &[
 
 pub fn system_bypass(existing: &str) -> String {
     // Browser WFP filters allow loopback only; LAN requests must reach Clash first.
-    let mut entries = vec!["localhost", "127.*", "[::1]", "::1"];
+    let mut entries = vec!["localhost", "127.*", "[::1]"];
     for entry in existing.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
         let lower = entry.to_ascii_lowercase();
         let host = lower.trim_start_matches("http://").trim_start_matches("https://");
+        // WinINet rejects an unbracketed IPv6 literal with ERROR_INVALID_PARAMETER.
+        if host == "::1" {
+            continue;
+        }
         let lan = host == "<local>"
             || host == "*"
             || host.starts_with("10.")
@@ -52,9 +56,9 @@ mod tests {
     #[test]
     fn legacy_lan_bypass_is_removed_but_loopback_and_unrelated_exceptions_survive() {
         let bypass = system_bypass(
-            "localhost;127.*;192.168.*;192.168.5.1;10.*;172.16.*;172.31.*;<local>;*.local;*.lan;[fd00::1];8.134.107.154;*.steamcontent.com",
+            "localhost;127.*;::1;192.168.*;192.168.5.1;10.*;172.16.*;172.31.*;<local>;*.local;*.lan;[fd00::1];8.134.107.154;*.steamcontent.com",
         );
-        assert_eq!(bypass, "localhost;127.*;[::1];::1;8.134.107.154;*.steamcontent.com");
+        assert_eq!(bypass, "localhost;127.*;[::1];8.134.107.154;*.steamcontent.com");
         assert_eq!(system_bypass(&bypass), bypass);
     }
 }
