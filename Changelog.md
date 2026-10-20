@@ -11,6 +11,9 @@
 <details>
 <summary><strong> 🐞 修复问题 </strong></summary>
 
+- Keep automatic chains stable between ten-minute scans and allow pinning a relay until it fails.
+
+- Fix automatic chains passing health checks while traffic bypasses them and their status is shown incorrectly.
 - 修复「Claude 出口保护」的 DNS 绕行：加密解析经过固定出口，失败不回退普通 DNS
 - 修复「自动链路」误排除同服务器、同端口的不同节点，并在节点页显示当前链路及延迟
 - 优化「自动链路」：稳定链路保持连接，连续故障或持续高延迟才切换，支持动态纳入全部订阅

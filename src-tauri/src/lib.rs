@@ -162,6 +162,7 @@ mod app_init {
             cmd::get_runtime_proxy_chain_config,
             cmd::get_auto_chain_options,
             cmd::get_auto_chain_status,
+            cmd::select_auto_chain_route,
             cmd::get_claude_guard_status,
             cmd::update_proxy_chain_config_in_runtime,
             cmd::invoke_uwp_tool,

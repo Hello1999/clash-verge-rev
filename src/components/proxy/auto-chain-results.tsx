@@ -1,5 +1,6 @@
 import {
   Box,
+  Button,
   Chip,
   LinearProgress,
   Stack,
@@ -23,11 +24,17 @@ export const AutoChainResults = ({
   selected,
   exits,
   sources,
+  manual,
+  busy,
+  onSelect,
 }: {
   routes: AutoChainRouteStatus[]
   selected: string | null
   exits: AutoChainExit[]
   sources?: string[] | null
+  manual: boolean
+  busy: boolean
+  onSelect: (name: string) => Promise<void>
 }) => {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
@@ -128,7 +135,14 @@ export const AutoChainResults = ({
               .map((route) => (
                 <TableRow key={route.key} selected={route.name === selected}>
                   <TableCell sx={{ minWidth: 140, overflowWrap: 'anywhere' }}>
-                    <Box>{route.label}</Box>
+                    <Button
+                      size="small"
+                      disabled={busy}
+                      onClick={() => void onSelect(route.name)}
+                      sx={{ textAlign: 'left', textTransform: 'none' }}
+                    >
+                      {route.label}
+                    </Button>
                     <Typography variant="caption" color="text.secondary">
                       {route.source}
                     </Typography>
@@ -145,7 +159,11 @@ export const AutoChainResults = ({
                       <Box>
                         <Chip
                           size="small"
-                          label={t('proxies.autoChain.current')}
+                          label={t(
+                            manual
+                              ? 'proxies.autoChain.manual'
+                              : 'proxies.autoChain.current',
+                          )}
                         />
                       </Box>
                     )}

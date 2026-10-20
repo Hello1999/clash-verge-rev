@@ -137,6 +137,7 @@ pub struct AutoChainStatus {
     total: usize,
     in_use: bool,
     fixed: bool,
+    manual: bool,
     delay: Option<u16>,
     checked_at: Option<std::string::String>,
 }
@@ -169,17 +170,15 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
         .as_deref()
         .and_then(state)
         .and_then(|state| state.history.last());
-    let mode = Config::runtime()
+    let in_use = Config::runtime()
         .await
         .data_arc()
         .config
         .as_ref()
-        .and_then(|config| config.get("mode"))
-        .and_then(|mode| mode.as_str())
-        .unwrap_or("rule")
-        .to_owned();
+        .is_some_and(crate::enhance::auto_chain::routes_proxy_traffic);
     Ok(Some(AutoChainStatus {
         selected: group.now.clone(),
+        manual: crate::core::auto_chain::manual_route(&settings).await.as_deref() == group.now.as_deref(),
         routes: members
             .iter()
             .filter(|name| name.as_str() != "REJECT")
@@ -203,12 +202,7 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
             })
             .count(),
         total: members.iter().filter(|name| name.as_str() != "REJECT").count(),
-        in_use: mode != "direct"
-            && (mode == "global") == (settings.target_group == "GLOBAL")
-            && proxies
-                .get(&settings.target_group)
-                .and_then(|group| group.now.as_deref())
-                == Some(GROUP),
+        in_use,
         fixed: group.fixed.as_ref().is_some_and(|fixed| !fixed.is_empty()),
         delay: last
             .filter(|_| group.now.as_deref().and_then(state).is_some_and(|state| state.alive))
@@ -245,4 +239,9 @@ pub async fn get_claude_guard_status() -> CmdResult<serde_json::Value> {
         "expected_exit": EXPECTED_EXIT, "domains": DOMAINS,
         "system_filter_verified": false
     }))
+}
+
+#[tauri::command]
+pub async fn select_auto_chain_route(name: std::string::String) -> CmdResult {
+    crate::core::auto_chain::select_route(&name).await.stringify_err()
 }

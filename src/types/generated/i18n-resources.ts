@@ -504,6 +504,7 @@ export interface TranslationResources {
         interval: string
         latency: string
         loadFailed: string
+        manual: string
         maxLatency: string
         maxLatencyHelp: string
         next: string

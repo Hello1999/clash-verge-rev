@@ -399,6 +399,7 @@ export const translationKeys = [
   'proxies.autoChain.sharedResult',
   'proxies.autoChain.currentChain',
   'proxies.autoChain.noCandidates',
+  'proxies.autoChain.manual',
   'proxies.claudeGuard.title',
   'proxies.claudeGuard.description',
   'proxies.claudeGuard.route',

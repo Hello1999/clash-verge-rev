@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 
 use futures::{StreamExt as _, stream};
 
@@ -25,50 +28,89 @@ async fn active_settings() -> Option<AutoChainSettings> {
 
 const PROBE_TIMEOUT: u32 = 5000;
 
+static MANUAL: tokio::sync::Mutex<Option<(AutoChainSettings, String)>> = tokio::sync::Mutex::const_new(None);
+static SCAN: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static SCAN_VERSION: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct SelectionState {
     selected: Option<String>,
     failures: u8,
-    slow: u8,
     switched_at: Option<Instant>,
-    warm: Vec<String>,
+    reviewed_scan: u64,
 }
 
 impl SelectionState {
-    fn observe(&mut self, selected: &str, delay: Option<u32>, threshold: u64) {
+    fn observe(&mut self, selected: &str, delay: Option<u32>) {
         if self.selected.as_deref() != Some(selected) {
-            self.selected = Some(selected.to_owned());
-            self.failures = 0;
-            self.slow = 0;
+            self.switched(selected);
         }
         self.failures = if delay.is_none() {
             self.failures.saturating_add(1)
         } else {
             0
         };
-        self.slow = if delay.is_some_and(|delay| u64::from(delay) > threshold) {
-            self.slow.saturating_add(1)
-        } else {
-            0
-        };
     }
 
-    fn should_switch(&self, current: &str, delay: Option<u32>, best: u32, tolerance: u64) -> bool {
+    fn review_due(&mut self, scan_version: u64, interval: u64) -> bool {
+        let due = scan_version != self.reviewed_scan
+            && self
+                .switched_at
+                .is_some_and(|time| time.elapsed() >= Duration::from_secs(interval.max(600)));
+        if due {
+            self.reviewed_scan = scan_version;
+        }
+        due
+    }
+
+    fn should_switch(
+        &self,
+        current: &str,
+        delay: Option<u32>,
+        best: u32,
+        tolerance: u64,
+        review: bool,
+        manual: bool,
+    ) -> bool {
         current == "REJECT"
             || self.failures >= 2
-            || (self.slow >= 3
-                && self
-                    .switched_at
-                    .is_none_or(|time| time.elapsed() >= Duration::from_secs(30))
-                && delay.is_some_and(|delay| u64::from(delay) > u64::from(best) + tolerance))
+            || (!manual && review && delay.is_some_and(|delay| u64::from(delay) > u64::from(best) + tolerance))
     }
 
     fn switched(&mut self, name: &str) {
         self.selected = Some(name.to_owned());
         self.failures = 0;
-        self.slow = 0;
         self.switched_at = Some(Instant::now());
     }
+}
+
+pub async fn select_route(name: &str) -> Result<()> {
+    let _write = Config::lock_config_write().await;
+    let settings = active_settings()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Automatic chain is disabled"))?;
+    let core = Handle::mihomo();
+    let proxies = core.get_proxies().await?.proxies;
+    anyhow::ensure!(
+        name != "REJECT"
+            && proxies
+                .get(GROUP)
+                .and_then(|group| group.all.as_ref())
+                .is_some_and(|members| members.iter().any(|member| member == name)),
+        "Unknown automatic chain route"
+    );
+    core.select_node_for_group(GROUP, name).await?;
+    *MANUAL.lock().await = Some((settings, name.to_owned()));
+    Ok(())
+}
+
+pub async fn manual_route(settings: &AutoChainSettings) -> Option<String> {
+    MANUAL
+        .lock()
+        .await
+        .as_ref()
+        .filter(|(saved, _)| saved == settings)
+        .map(|(_, name)| name.clone())
 }
 
 async fn probe(name: &str, settings: &AutoChainSettings) -> Option<u32> {
@@ -87,63 +129,81 @@ async fn probe_active_routes(settings: &AutoChainSettings, selection: &mut Selec
     let proxies = core.get_proxies().await?.proxies;
     let Some(group) = proxies.get(GROUP) else { return Ok(()) };
     let current = group.now.as_deref().unwrap_or("REJECT");
+    let manual_choice = manual_route(settings).await;
+    let current_delay = if current == "REJECT" {
+        None
+    } else {
+        probe(current, settings).await
+    };
+    selection.observe(current, current_delay);
+    let scan_version = SCAN_VERSION.load(Ordering::Acquire);
+    let review = selection.review_due(scan_version, settings.interval);
+    let failed = current == "REJECT" || selection.failures >= 2;
+    if !failed && (!review || manual_choice.as_deref() == Some(current)) {
+        return Ok(());
+    }
+    if failed {
+        SCAN.notify_one();
+    }
     let mut ranked: Vec<_> = group
         .all
         .iter()
         .flatten()
-        .filter_map(|name| {
-            if name == current || name == "REJECT" {
-                return None;
-            }
-            let state = proxies.get(name)?.extra.get(&settings.url)?;
-            let sample = state.history.last()?;
-            let checked = chrono::DateTime::parse_from_rfc3339(&sample.time).ok()?;
-            let age = chrono::Utc::now().signed_duration_since(checked).num_seconds();
-            (state.alive && sample.delay > 0 && (0..=30).contains(&age)).then_some((sample.delay, name.clone()))
+        .filter(|name| name.as_str() != "REJECT" && name.as_str() != current)
+        .map(|name| {
+            let delay = proxies
+                .get(name)
+                .and_then(|proxy| proxy.extra.get(&settings.url))
+                .filter(|state| state.alive)
+                .and_then(|state| state.history.last())
+                .filter(|sample| sample.delay > 0)
+                .map_or(u16::MAX, |sample| sample.delay);
+            (delay, name.clone())
         })
         .collect();
     ranked.sort();
-    // Refresh backups before using them; full-scan results alone never authorize a switch.
-    let mut names: Vec<_> = std::iter::once(current.to_owned())
-        .chain(ranked.into_iter().take(2).map(|(_, name)| name))
-        .collect();
-    for name in selection.warm.iter().chain(group.all.iter().flatten()) {
-        if names.len() >= 3 {
-            break;
-        }
-        if name != "REJECT" && !names.contains(name) && group.all.as_ref().is_some_and(|members| members.contains(name))
-        {
-            names.push(name.clone());
-        }
-    }
-    selection.warm = names.iter().filter(|name| name.as_str() != "REJECT").cloned().collect();
-    let results = futures::future::join_all(names.iter().map(|name| async move {
-        if name == "REJECT" {
-            None
-        } else {
-            probe(name, settings).await
-        }
-    }))
-    .await;
-    selection.observe(current, results[0], settings.max_latency);
-    let best = names
-        .iter()
-        .zip(&results)
-        .skip(1)
-        .filter_map(|(name, delay)| delay.map(|delay| (delay, name)))
-        .min_by_key(|(delay, _)| *delay);
+    // Cached rankings only prioritize candidates; verify each complete route before switching.
+    let best = futures::future::join_all(
+        ranked
+            .into_iter()
+            .take(3)
+            .map(|(_, name)| async move { probe(&name, settings).await.map(|delay| (delay, name)) }),
+    )
+    .await
+    .into_iter()
+    .flatten()
+    .min_by_key(|(delay, _)| *delay);
     let next = match best {
-        Some((delay, name)) if selection.should_switch(current, results[0], delay, settings.tolerance) => {
-            Some(name.as_str())
+        Some((delay, name))
+            if selection.should_switch(
+                current,
+                current_delay,
+                delay,
+                settings.tolerance,
+                review,
+                manual_choice.as_deref() == Some(current),
+            ) =>
+        {
+            Some(name)
         }
-        _ if selection.failures >= 2 && current != "REJECT" => Some("REJECT"),
+        _ if failed && current != "REJECT" => Some("REJECT".to_owned()),
         _ => None,
     };
     if let Some(next) = next {
         let _write = Config::lock_config_write().await;
-        if active_settings().await.as_ref() == Some(settings) {
-            core.select_node_for_group(GROUP, next).await?;
-            selection.switched(next);
+        if active_settings().await.as_ref() == Some(settings)
+            && manual_route(settings).await == manual_choice
+            && core
+                .get_proxies()
+                .await?
+                .proxies
+                .get(GROUP)
+                .and_then(|group| group.now.as_deref())
+                == Some(current)
+        {
+            core.select_node_for_group(GROUP, &next).await?;
+            *MANUAL.lock().await = None;
+            selection.switched(&next);
             logging!(info, Type::Core, "Automatic chain switched from {current} to {next}");
         }
     }
@@ -206,6 +266,10 @@ pub fn start() {
             if previous != current {
                 selection = SelectionState::default();
                 previous = current.clone();
+                if current.is_none() {
+                    *MANUAL.lock().await = None;
+                }
+                SCAN.notify_one();
             }
             if let Some(settings) = current
                 && let Err(error) = probe_active_routes(&settings, &mut selection).await
@@ -223,7 +287,11 @@ pub fn start() {
             {
                 logging!(debug, Type::Core, "Automatic chain scan will retry: {error:#}");
             }
-            tokio::time::sleep(Duration::from_secs(settings.map_or(2, |settings| settings.interval))).await;
+            SCAN_VERSION.fetch_add(1, Ordering::Release);
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(settings.map_or(2, |settings| settings.interval.max(600)))) => {},
+                _ = SCAN.notified() => {},
+            }
         }
     });
     AsyncHandler::spawn(|| async {
@@ -247,41 +315,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn healthy_routes_do_not_chase_lower_latency() {
-        let mut state = SelectionState::default();
-        for _ in 0..10 {
-            state.observe("current", Some(700), 1000);
-            assert!(!state.should_switch("current", Some(700), 100, 50));
-        }
-    }
-
-    #[test]
-    fn failures_require_confirmation_and_bypass_cooldown() {
+    fn legacy_short_intervals_still_wait_ten_minutes() {
         let mut state = SelectionState::default();
         state.switched("current");
-        state.observe("current", None, 1000);
-        assert!(!state.should_switch("current", None, 100, 50));
-        state.observe("current", Some(300), 1000);
-        assert_eq!(state.failures, 0);
-        state.observe("current", None, 1000);
-        state.observe("current", None, 1000);
-        assert!(state.should_switch("current", None, 100, 50));
+        state.switched_at = Some(Instant::now() - Duration::from_secs(599));
+        assert!(!state.review_due(1, 15));
+        state.switched_at = Some(Instant::now() - Duration::from_secs(600));
+        assert!(state.review_due(1, 15));
+        assert!(!state.review_due(1, 15));
+        state.switched("replacement");
+        assert!(!state.review_due(2, 600));
     }
 
     #[test]
-    fn sustained_latency_requires_improvement_and_cooldown() {
+    fn healthy_routes_wait_for_periodic_review() {
         let mut state = SelectionState::default();
-        for _ in 0..2 {
-            state.observe("current", Some(1500), 1000);
-            assert!(!state.should_switch("current", Some(1500), 200, 50));
+        for _ in 0..10 {
+            state.observe("current", Some(4000));
+            assert!(!state.should_switch("current", Some(4000), 100, 50, false, false));
         }
-        state.observe("current", Some(1500), 1000);
-        assert!(state.should_switch("current", Some(1500), 200, 50));
-        assert!(!state.should_switch("current", Some(1500), 1480, 50));
-        state.switched_at = Some(Instant::now());
-        assert!(!state.should_switch("current", Some(1500), 200, 50));
-        state.observe("current", Some(700), 1000);
-        assert_eq!(state.slow, 0);
-        assert!(state.should_switch("REJECT", None, 200, 50));
+        assert!(state.should_switch("current", Some(4000), 100, 50, true, false));
+        assert!(!state.should_switch("current", Some(4000), 3980, 50, true, false));
+    }
+
+    #[test]
+    fn manual_routes_ignore_periodic_review_until_failure() {
+        let mut state = SelectionState::default();
+        state.observe("manual", Some(4000));
+        assert!(!state.should_switch("manual", Some(4000), 100, 50, true, true));
+        state.observe("manual", None);
+        assert!(!state.should_switch("manual", None, 100, 50, true, true));
+        state.observe("manual", Some(300));
+        assert_eq!(state.failures, 0);
+        state.observe("manual", None);
+        state.observe("manual", None);
+        assert!(state.should_switch("manual", None, 100, 50, false, true));
+        assert!(state.should_switch("REJECT", None, 100, 50, false, false));
     }
 }

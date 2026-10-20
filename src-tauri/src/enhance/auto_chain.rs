@@ -37,8 +37,8 @@ impl AutoChainSettings {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            (5..=300).contains(&self.interval),
-            "Check interval must be between 5 and 300 seconds"
+            (5..=3600).contains(&self.interval),
+            "Check interval must be between 5 and 3600 seconds"
         );
         ensure!(
             (200..=5000).contains(&self.max_latency),
@@ -356,6 +356,27 @@ pub fn without_generated(mut config: Mapping) -> Mapping {
     config
 }
 
+pub fn routes_proxy_traffic(config: &Mapping) -> bool {
+    let has_chain_rule = |rules: &Value| {
+        rules.as_sequence().is_some_and(|rules| {
+            rules.iter().filter_map(Value::as_str).any(|rule| {
+                !rule.starts_with("SUB-RULE,")
+                    && rule
+                        .split(',')
+                        .rev()
+                        .find(|field| field.trim() != "no-resolve")
+                        .is_some_and(|policy| policy.trim() == GROUP)
+            })
+        })
+    };
+    config.get("mode").and_then(Value::as_str) == Some("rule")
+        && (config.get("rules").is_some_and(has_chain_rule)
+            || config
+                .get("sub-rules")
+                .and_then(Value::as_mapping)
+                .is_some_and(|rules| rules.values().any(has_chain_rule)))
+}
+
 pub fn route_all_proxy_traffic(config: &mut Mapping, selected: &BTreeMap<String, String>) {
     fn resolve<'a>(
         name: &'a str,
@@ -559,7 +580,9 @@ sub-rules:
 ",
         )?;
         let selected = BTreeMap::from([("Provider".into(), "cached-provider-node".into())]);
+        assert!(!routes_proxy_traffic(&config));
         route_all_proxy_traffic(&mut config, &selected);
+        assert!(routes_proxy_traffic(&config));
         let expected = [
             "DOMAIN,school.example,DIRECT",
             "DOMAIN,ad.example,REJECT",
@@ -585,6 +608,13 @@ sub-rules:
         let once = config.clone();
         route_all_proxy_traffic(&mut config, &selected);
         assert_eq!(config, once);
+        config.insert("mode".into(), "direct".into());
+        assert!(!routes_proxy_traffic(&config));
+        config.insert("mode".into(), "rule".into());
+        config.remove("rules");
+        assert!(routes_proxy_traffic(&config));
+        config.remove("sub-rules");
+        assert!(!routes_proxy_traffic(&config));
         let mut settings = settings();
         settings.target_group.clear();
         settings.validate()?;

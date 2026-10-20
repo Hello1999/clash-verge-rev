@@ -142,6 +142,7 @@ export async function getAutoChainStatus() {
     total: number
     in_use: boolean
     fixed: boolean
+    manual: boolean
     delay: number | null
     checked_at: string | null
   } | null>('get_auto_chain_status')
@@ -592,3 +593,7 @@ export const getClaudeGuardStatus = () =>
     expected_exit: string | null
     domains: string[]
   }>('get_claude_guard_status')
+
+export async function selectAutoChainRoute(name: string) {
+  return invoke<void>('select_auto_chain_route', { name })
+}

@@ -27,6 +27,7 @@ import {
   type AutoChainExit,
   getAutoChainOptions,
   getAutoChainStatus,
+  selectAutoChainRoute,
 } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
 import { useQuery } from '@/services/query-client'
@@ -44,9 +45,8 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const [busy, setBusy] = useState(false)
   const [exit, setExit] = useState<AutoChainExit | null>(null)
   const [sources, setSources] = useState<string[] | null>(null)
-  const [interval, setInterval] = useState(15)
+  const [interval, setInterval] = useState(600)
   const [tolerance, setTolerance] = useState(50)
-  const [maxLatency, setMaxLatency] = useState(1000)
   const [url, setUrl] = useState(DEFAULT_URL)
   const saved = verge?.auto_chain
   const enabled = saved?.enabled && saved.profile_uid === profiles?.current
@@ -81,9 +81,8 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const show = () => {
     setExit(null)
     setSources(saved?.entry_sources ?? null)
-    setInterval(saved?.interval ?? 15)
+    setInterval(Math.max(saved?.interval ?? 600, 600))
     setTolerance(saved?.tolerance ?? 50)
-    setMaxLatency(saved?.max_latency ?? 1000)
     setUrl(saved?.url ?? DEFAULT_URL)
     setOpen(true)
     void options.refetch()
@@ -102,7 +101,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
           exit_name: chosenExit.name,
           interval,
           tolerance,
-          max_latency: maxLatency,
+          max_latency: saved?.max_latency ?? 1000,
           url,
         },
       })
@@ -274,6 +273,20 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                 selected={status.selected}
                 exits={options.data?.exits ?? []}
                 sources={saved.entry_sources}
+                manual={status.manual}
+                busy={busy}
+                onSelect={async (name) => {
+                  setBusy(true)
+                  try {
+                    await selectAutoChainRoute(name)
+                    await live.refetch()
+                    await refreshProxy()
+                  } catch (error) {
+                    showNotice.error(error)
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
               />
             )}
             <Accordion
@@ -302,7 +315,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                         setInterval(Number(event.target.value))
                       }
                       disabled={busy}
-                      slotProps={{ htmlInput: { min: 5, max: 300 } }}
+                      slotProps={{ htmlInput: { min: 600, max: 3600 } }}
                     />
                     <TextField
                       fullWidth
@@ -317,17 +330,6 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                       slotProps={{ htmlInput: { min: 0, max: 1000 } }}
                     />
                   </Box>
-                  <TextField
-                    type="number"
-                    label={t('proxies.autoChain.maxLatency')}
-                    helperText={t('proxies.autoChain.maxLatencyHelp')}
-                    value={maxLatency}
-                    onChange={(event) =>
-                      setMaxLatency(Number(event.target.value))
-                    }
-                    disabled={busy}
-                    slotProps={{ htmlInput: { min: 200, max: 5000 } }}
-                  />
                   <TextField
                     label={t('proxies.autoChain.url')}
                     value={url}
@@ -362,12 +364,10 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
               !chosenExit ||
               !chosenSources.length ||
               !profiles?.current ||
-              interval < 5 ||
-              interval > 300 ||
+              interval < 600 ||
+              interval > 3600 ||
               tolerance < 0 ||
               tolerance > 1000 ||
-              maxLatency < 200 ||
-              maxLatency > 5000 ||
               !url.startsWith('https://')
             }
           >
