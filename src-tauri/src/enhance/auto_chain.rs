@@ -9,17 +9,27 @@ use crate::{config::IProfiles, utils::dirs};
 pub const GROUP: &str = "CV Auto Chain";
 pub const PREFIX: &str = "CV Chain / ";
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub struct RelaySelection {
+    pub source: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct AutoChainSettings {
     pub enabled: bool,
     pub profile_uid: String,
     #[serde(default)]
     pub entry_sources: Option<Vec<String>>,
+    #[serde(default)]
+    pub entry_nodes: Option<Vec<RelaySelection>>,
     pub exit_source: String,
     pub exit_name: String,
     #[serde(default)]
     pub target_group: String,
     pub interval: u64,
+    #[serde(default = "default_timeout")]
+    pub timeout: u32,
     pub tolerance: u64,
     #[serde(default = "default_max_latency")]
     pub max_latency: u64,
@@ -28,6 +38,10 @@ pub struct AutoChainSettings {
 
 pub const fn default_max_latency() -> u64 {
     1000
+}
+
+pub const fn default_timeout() -> u32 {
+    15000
 }
 
 impl AutoChainSettings {
@@ -41,6 +55,10 @@ impl AutoChainSettings {
             "Check interval must be between 5 and 3600 seconds"
         );
         ensure!(
+            (1000..=30000).contains(&self.timeout),
+            "Probe timeout must be between 1000 and 30000 ms"
+        );
+        ensure!(
             (200..=5000).contains(&self.max_latency),
             "High latency threshold must be between 200 and 5000 ms"
         );
@@ -48,6 +66,10 @@ impl AutoChainSettings {
         ensure!(
             self.entry_sources.as_ref().is_none_or(|sources| !sources.is_empty()),
             "Choose at least one relay subscription"
+        );
+        ensure!(
+            self.entry_nodes.as_ref().is_none_or(|nodes| !nodes.is_empty()),
+            "Choose at least one relay node"
         );
         let url = tauri::Url::parse(&self.url).context("Invalid health check URL")?;
         ensure!(
@@ -77,6 +99,7 @@ pub struct SubscriptionOption {
 #[derive(Serialize)]
 pub struct AutoChainOptions {
     pub exits: Vec<ExitOption>,
+    pub entries: Vec<ExitOption>,
     pub subscriptions: Vec<SubscriptionOption>,
     pub warnings: Vec<String>,
 }
@@ -127,6 +150,19 @@ impl Catalog {
                 }
                 sources.into_values().collect()
             },
+            entries: self
+                .nodes
+                .iter()
+                .filter(|node| !node.proxy.contains_key("dialer-proxy"))
+                .filter_map(|node| {
+                    Some(ExitOption {
+                        source: node.source.clone(),
+                        source_label: node.source_label.clone(),
+                        name: node.proxy.get("name")?.as_str()?.to_owned(),
+                        route_id: identity(&node.proxy).ok()?[..12].to_owned(),
+                    })
+                })
+                .collect(),
             warnings: self.warnings.clone(),
         }
     }
@@ -138,7 +174,11 @@ fn add_nodes(catalog: &mut Catalog, source: &str, label: &str, nodes: &[Value]) 
         let Some(name) = proxy.get("name").and_then(Value::as_str) else {
             continue;
         };
-        if name.starts_with(PREFIX) || !proxy.contains_key("server") || !proxy.contains_key("port") {
+        if name.starts_with(PREFIX)
+            || name == super::claude_guard::OUTBOUND
+            || !proxy.contains_key("server")
+            || !proxy.contains_key("port")
+        {
             continue;
         }
         catalog.nodes.push(Candidate {
@@ -302,6 +342,14 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
                 continue;
             }
             let entry = &candidate.proxy;
+            if !settings.entry_nodes.as_ref().is_none_or(|nodes| {
+                nodes.iter().any(|node| {
+                    node.source == candidate.source
+                        && entry.get("name").and_then(Value::as_str) == Some(node.name.as_str())
+                })
+            }) {
+                continue;
+            }
             if entry.contains_key("dialer-proxy") {
                 continue;
             }
@@ -471,10 +519,12 @@ mod tests {
             enabled: true,
             profile_uid: "p".into(),
             entry_sources: None,
+            entry_nodes: None,
             exit_source: "exit".into(),
             exit_name: "Home".into(),
             target_group: "Proxy".into(),
             interval: 5,
+            timeout: default_timeout(),
             tolerance: 50,
             max_latency: default_max_latency(),
             url: "https://www.gstatic.com/generate_204".into(),
@@ -501,6 +551,32 @@ mod tests {
             });
         }
         Ok((config, catalog))
+    }
+
+    #[test]
+    fn selected_nodes_never_expand_to_other_sources_or_disappearing_relays() -> Result<()> {
+        let (mut config, mut catalog) = fixture()?;
+        let mut settings = settings();
+        settings.entry_nodes = Some(vec![RelaySelection {
+            source: "b".into(),
+            name: "HK".into(),
+        }]);
+        build(&mut config, &settings, &catalog)?;
+        let routes = config["proxy-groups"][1]["proxies"].as_sequence().context("routes")?;
+        assert_eq!(routes.len(), 2);
+        let entry = &config["proxies"][0];
+        assert_eq!(entry["server"].as_str(), Some("entry-b.example"));
+
+        catalog.nodes.retain(|node| node.source != "b");
+        let mut config = without_generated(config);
+        build(&mut config, &settings, &catalog)?;
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"],
+            Value::Sequence(vec!["REJECT".into()])
+        );
+        settings.entry_nodes = Some(vec![]);
+        assert!(settings.validate().is_err());
+        Ok(())
     }
 
     #[test]

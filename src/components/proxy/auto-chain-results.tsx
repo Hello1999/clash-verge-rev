@@ -173,7 +173,7 @@ export const AutoChainResults = ({
                       size="small"
                       variant="outlined"
                       color={
-                        !route.checked_at
+                        !route.fresh
                           ? 'default'
                           : route.alive
                             ? 'success'
@@ -182,9 +182,11 @@ export const AutoChainResults = ({
                       label={
                         !route.checked_at
                           ? t('proxies.autoChain.pending')
-                          : route.alive
-                            ? t('proxies.autoChain.reachable')
-                            : t('proxies.autoChain.failed')
+                          : !route.fresh
+                            ? t('proxies.autoChain.stale')
+                            : route.alive
+                              ? t('proxies.autoChain.reachable')
+                              : t('proxies.autoChain.failed')
                       }
                     />
                   </TableCell>

@@ -3,6 +3,7 @@ import { Box, Button, ButtonGroup } from '@mui/material'
 import { useLockFn } from 'ahooks'
 import { useCallback, useEffect, useReducer, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { selectNodeForGroup } from 'tauri-plugin-mihomo-api'
 
 import { BasePage, TooltipIcon } from '@/components/base'
 import { AutoChain, AutoChainCurrent } from '@/components/proxy/auto-chain'
@@ -18,6 +19,7 @@ import {
 import {
   getRuntimeProxyChainConfig,
   patchClashMode,
+  recordSelectedNode,
   updateProxyChainConfigInRuntime,
 } from '@/services/cmds'
 import { showNotice } from '@/services/notice-service'
@@ -53,7 +55,7 @@ const ProxyPage = () => {
   )
 
   const { clashConfig } = useClashConfigData()
-  const { refreshClashConfig } = useAppRefreshers()
+  const { refreshClashConfig, refreshProxy } = useAppRefreshers()
 
   const updateChainConfigData = useCallback((value: string | null) => {
     dispatchChainConfigData(value)
@@ -76,20 +78,31 @@ const ProxyPage = () => {
   const onToggleChainMode = useLockFn(async () => {
     const newChainMode = !isChainMode
 
-    setIsChainMode(newChainMode)
-    // 保存链式代理按钮状态到 localStorage
-    localStorage.setItem('proxy-chain-mode-enabled', newChainMode.toString())
-
     if (!newChainMode) {
       // 退出链式代理模式时，清除链式代理配置
       try {
         debugLog('Exiting chain mode, clearing chain configuration')
         await updateProxyChainConfigInRuntime(null)
+        const group = localStorage.getItem('proxy-chain-group')
+        const previous = localStorage.getItem('proxy-chain-previous-node')
+        if (group && previous) {
+          await selectNodeForGroup(group, previous)
+          await recordSelectedNode(group, previous)
+        }
+        localStorage.removeItem('proxy-chain-exit-node')
+        localStorage.removeItem('proxy-chain-group')
+        localStorage.removeItem('proxy-chain-items')
+        localStorage.removeItem('proxy-chain-previous-node')
+        await refreshProxy()
         debugLog('Chain configuration cleared successfully')
       } catch (error) {
         console.error('Failed to clear chain configuration:', error)
+        showNotice.error(error)
+        return
       }
     }
+    setIsChainMode(newChainMode)
+    localStorage.setItem('proxy-chain-mode-enabled', newChainMode.toString())
   })
 
   // 当开启链式代理模式时，获取配置数据
@@ -210,6 +223,7 @@ const ProxyPage = () => {
               localStorage.removeItem('proxy-chain-exit-node')
               localStorage.removeItem('proxy-chain-group')
               localStorage.removeItem('proxy-chain-items')
+              localStorage.removeItem('proxy-chain-previous-node')
             }}
           />
         </Box>

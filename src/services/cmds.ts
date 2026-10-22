@@ -115,6 +115,7 @@ export interface AutoChainSubscription {
 export interface AutoChainRouteStatus {
   name: string
   alive: boolean
+  fresh: boolean
   delay: number | null
   checked_at: string | null
 }
@@ -129,6 +130,7 @@ export interface AutoChainExit {
 export async function getAutoChainOptions() {
   return invoke<{
     exits: AutoChainExit[]
+    entries: AutoChainExit[]
     subscriptions: AutoChainSubscription[]
     warnings: string[]
   }>('get_auto_chain_options')

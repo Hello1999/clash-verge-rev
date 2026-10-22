@@ -87,6 +87,7 @@ pub async fn get_runtime_proxy_chain_config(proxy_chain_exit_node: String) -> Cm
 
 #[tauri::command]
 pub async fn update_proxy_chain_config_in_runtime(proxy_chain_config: Option<serde_yaml_ng::Value>) -> CmdResult<()> {
+    let _write = Config::lock_config_write().await;
     let profiles = Config::profiles().await.data_arc();
     if Config::verge()
         .await
@@ -97,11 +98,38 @@ pub async fn update_proxy_chain_config_in_runtime(proxy_chain_config: Option<ser
     {
         return Err("Disable automatic chain selection before editing a manual chain".into());
     }
-    match CoreManager::global()
-        .update_runtime_config(|d| d.update_proxy_chain_config(proxy_chain_config))
-        .await
-    {
-        Ok(outcome) if outcome.is_valid() => Ok(()),
+    let before = Config::runtime().await.data_arc();
+    let mut candidate = (**before).clone();
+    candidate
+        .update_proxy_chain_config(proxy_chain_config)
+        .stringify_err()?;
+    let changed: Vec<_> = before
+        .config
+        .as_ref()
+        .and_then(|config| config.get("proxies"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|proxy| {
+            let name = proxy.get("name");
+            candidate
+                .config
+                .as_ref()
+                .and_then(|config| config.get("proxies"))
+                .and_then(serde_yaml_ng::Value::as_sequence)
+                .and_then(|proxies| proxies.iter().find(|node| node.get("name") == name))
+                != Some(*proxy)
+        })
+        .filter_map(|proxy| proxy.get("name").and_then(serde_yaml_ng::Value::as_str))
+        .collect();
+    match CoreManager::global().update_runtime_config(|d| *d = candidate).await {
+        Ok(outcome) if outcome.is_valid() => {
+            crate::core::auto_chain::close_connections(&changed)
+                .await
+                .stringify_err()?;
+            crate::core::handle::Handle::refresh_clash();
+            Ok(())
+        }
         Ok(outcome) => Err(format!("Failed to apply runtime proxy chain config: {outcome}").into()),
         Err(err) => Err(format!("Failed to apply runtime proxy chain config: {err:#}").into()),
     }
@@ -125,6 +153,7 @@ pub async fn get_auto_chain_options() -> CmdResult<crate::enhance::auto_chain::A
 pub struct AutoChainRouteStatus {
     name: std::string::String,
     alive: bool,
+    fresh: bool,
     delay: Option<u16>,
     checked_at: Option<std::string::String>,
 }
@@ -169,14 +198,7 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
         .now
         .as_deref()
         .and_then(state)
-        .and_then(|state| state.history.last())
-        .filter(|sample| {
-            chrono::DateTime::parse_from_rfc3339(&sample.time)
-                .ok()
-                .is_some_and(|checked| {
-                    (0..=45).contains(&chrono::Utc::now().signed_duration_since(checked).num_seconds())
-                })
-        });
+        .and_then(|state| state.history.last());
     let in_use = Config::runtime()
         .await
         .data_arc()
@@ -192,28 +214,32 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
             .map(|name| {
                 let state = state(name);
                 let sample = state.and_then(|state| state.history.last());
-                let alive = state.is_some_and(|state| state.alive) && sample.is_some_and(|sample| sample.delay > 0);
+                let delay = crate::core::auto_chain::fresh_delay(state);
+                let fresh = sample.is_some_and(|sample| {
+                    chrono::DateTime::parse_from_rfc3339(&sample.time)
+                        .ok()
+                        .is_some_and(|time| {
+                            (0..=crate::core::auto_chain::HEALTH_MAX_AGE)
+                                .contains(&chrono::Utc::now().signed_duration_since(time).num_seconds())
+                        })
+                });
                 AutoChainRouteStatus {
                     name: name.clone(),
-                    alive,
-                    delay: sample.filter(|_| alive).map(|sample| sample.delay),
+                    alive: delay.is_some(),
+                    fresh,
+                    delay,
                     checked_at: sample.map(|sample| sample.time.clone()),
                 }
             })
             .collect(),
         healthy: members
             .iter()
-            .filter(|name| {
-                state(name)
-                    .is_some_and(|state| state.alive && state.history.last().is_some_and(|sample| sample.delay > 0))
-            })
+            .filter(|name| crate::core::auto_chain::fresh_delay(state(name)).is_some())
             .count(),
         total: members.iter().filter(|name| name.as_str() != "REJECT").count(),
         in_use,
         fixed: group.fixed.as_ref().is_some_and(|fixed| !fixed.is_empty()),
-        delay: last
-            .filter(|_| group.now.as_deref().and_then(state).is_some_and(|state| state.alive))
-            .map(|sample| sample.delay),
+        delay: crate::core::auto_chain::fresh_delay(group.now.as_deref().and_then(state)),
         checked_at: last.map(|sample| sample.time.clone()),
     }))
 }

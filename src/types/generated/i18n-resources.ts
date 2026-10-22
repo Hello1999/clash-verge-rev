@@ -486,6 +486,7 @@ export interface TranslationResources {
     proxies: {
       autoChain: {
         advanced: string
+        allNodes: string
         allSources: string
         apply: string
         applying: string
@@ -507,8 +508,11 @@ export interface TranslationResources {
         manual: string
         maxLatency: string
         maxLatencyHelp: string
+        missingNodes: string
         next: string
         noCandidates: string
+        nodes: string
+        nodesHelp: string
         noResults: string
         notSelected: string
         page: string
@@ -528,10 +532,13 @@ export interface TranslationResources {
         sharedResult: string
         sources: string
         sourcesHelp: string
+        stale: string
         stop: string
         summary: string
         target: string
         targetHelp: string
+        timeout: string
+        timeoutHelp: string
         title: string
         tolerance: string
         toleranceHelp: string

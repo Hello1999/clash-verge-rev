@@ -35,10 +35,7 @@ import {
   useState,
 } from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  closeAllConnections,
-  selectNodeForGroup,
-} from 'tauri-plugin-mihomo-api'
+import { selectNodeForGroup } from 'tauri-plugin-mihomo-api'
 
 import { TooltipIcon } from '@/components/base'
 import { useRuntimeConfig } from '@/hooks/use-clash'
@@ -336,7 +333,8 @@ export const ProxyChain = ({
   const chainWarning = t('proxies.page.chain.warning')
   const { proxyView } = useProxiesData()
   const { refreshProxy } = useAppRefreshers()
-  const { data: runtimeConfig } = useRuntimeConfig(true)
+  const { data: runtimeConfig, refetch: refreshRuntime } =
+    useRuntimeConfig(true)
   const [isConnecting, setIsConnecting] = useState(false)
   const recordSelection = useRecordSelection()
   const markUnsavedChanges = useCallback(() => {
@@ -374,11 +372,25 @@ export const ProxyChain = ({
       return false
     }
 
-    const lastNode = currentProxyChain[currentProxyChain.length - 1]
-    if (localStorage.getItem('proxy-chain-exit-node') === lastNode.name) {
-      return true
-    }
     if (currentProxyChain.length < 2) return false
+    const runtimeProxies = (
+      runtimeConfig as RuntimeConfigWithProxySequence | null
+    )?.proxies
+    if (
+      !Array.isArray(runtimeProxies) ||
+      !currentProxyChain
+        .slice(1)
+        .every((node, index) =>
+          runtimeProxies.some(
+            (proxy) =>
+              proxy.name === node.name &&
+              proxy['dialer-proxy'] === currentProxyChain[index].name,
+          ),
+        )
+    )
+      return false
+
+    const lastNode = currentProxyChain[currentProxyChain.length - 1]
 
     if (mode === 'global') {
       return proxyView.global?.now === lastNode.name
@@ -393,7 +405,7 @@ export const ProxyChain = ({
     )
 
     return proxyChainGroup?.now === lastNode.name
-  }, [proxyView, currentProxyChain, mode, selectedGroup])
+  }, [proxyView, runtimeConfig, currentProxyChain, mode, selectedGroup])
 
   // 监听链的变化，但排除从配置加载的情况
   const chainLengthRef = useRef(currentProxyChain.length)
@@ -453,13 +465,16 @@ export const ProxyChain = ({
 
         if (targetGroup) {
           try {
-            await selectNodeForGroup(targetGroup, 'DIRECT')
-            recordSelection(targetGroup, 'DIRECT')
+            const previous =
+              localStorage.getItem('proxy-chain-previous-node') ||
+              currentProxyChain[0].name
+            await selectNodeForGroup(targetGroup, previous)
+            await recordSelection(targetGroup, previous)
           } catch {
             if (currentProxyChain.length >= 1) {
               try {
                 await selectNodeForGroup(targetGroup, currentProxyChain[0].name)
-                recordSelection(targetGroup, currentProxyChain[0].name)
+                await recordSelection(targetGroup, currentProxyChain[0].name)
               } catch {
                 // ignore
               }
@@ -470,9 +485,10 @@ export const ProxyChain = ({
         localStorage.removeItem('proxy-chain-group')
         localStorage.removeItem('proxy-chain-exit-node')
         localStorage.removeItem('proxy-chain-items')
+        localStorage.removeItem('proxy-chain-previous-node')
 
-        await closeAllConnections()
         await refreshProxy()
+        await refreshRuntime()
 
         onUpdateChain([])
       } catch (error) {
@@ -498,11 +514,13 @@ export const ProxyChain = ({
     }
 
     setIsConnecting(true)
+    let applied = false
     try {
       // 第一步：保存链式代理配置
       const chainProxies = currentProxyChain.map((node) => node.name)
       debugLog('Saving chain config:', chainProxies)
       await updateProxyChainConfigInRuntime(chainProxies)
+      applied = true
       debugLog('Chain configuration saved successfully')
 
       // 第二步：连接到代理链的最后一个节点
@@ -515,18 +533,35 @@ export const ProxyChain = ({
       }
 
       const targetGroup = mode === 'global' ? 'GLOBAL' : selectedGroup
+      const previous =
+        mode === 'global'
+          ? proxyView?.global?.now
+          : proxyView?.groups.find((group) => group.name === targetGroup)?.now
 
       await selectNodeForGroup(targetGroup || 'GLOBAL', lastNode.name)
       // The chain moves the group like any other selection, so the profile has to learn about
       // it: what the profile holds is what gets re-applied the next time the core starts.
-      recordSelection(targetGroup || 'GLOBAL', lastNode.name)
+      await recordSelection(targetGroup || 'GLOBAL', lastNode.name)
+      if (previous) localStorage.setItem('proxy-chain-previous-node', previous)
       localStorage.setItem('proxy-chain-group', targetGroup || 'GLOBAL')
       localStorage.setItem('proxy-chain-exit-node', lastNode.name)
 
       // 刷新代理信息以更新连接状态
-      refreshProxy()
+      await refreshProxy()
+      await refreshRuntime()
       debugLog('Successfully connected to proxy chain')
     } catch (error) {
+      if (applied) {
+        try {
+          await updateProxyChainConfigInRuntime(null)
+          await refreshRuntime()
+        } catch (rollbackError) {
+          console.error(
+            'Failed to restore the previous proxy configuration:',
+            rollbackError,
+          )
+        }
+      }
       console.error('Failed to connect to proxy chain:', error)
       alert(t('proxies.page.chain.connectFailed'))
     } finally {
@@ -537,6 +572,7 @@ export const ProxyChain = ({
     isConnected,
     t,
     refreshProxy,
+    refreshRuntime,
     mode,
     proxyView,
     selectedGroup,
@@ -592,12 +628,28 @@ export const ProxyChain = ({
           {currentProxyChain.length > 0 && (
             <IconButton
               size="small"
-              onClick={() => {
-                updateProxyChainConfigInRuntime(null)
-                localStorage.removeItem('proxy-chain-group')
-                localStorage.removeItem('proxy-chain-exit-node')
-                localStorage.removeItem('proxy-chain-items')
-                onUpdateChain([])
+              disabled={isConnecting}
+              onClick={async () => {
+                if (isConnected) {
+                  await handleConnect()
+                  return
+                }
+                setIsConnecting(true)
+                try {
+                  await updateProxyChainConfigInRuntime(null)
+                  localStorage.removeItem('proxy-chain-group')
+                  localStorage.removeItem('proxy-chain-exit-node')
+                  localStorage.removeItem('proxy-chain-items')
+                  localStorage.removeItem('proxy-chain-previous-node')
+                  onUpdateChain([])
+                  await refreshRuntime()
+                  await refreshProxy()
+                } catch (error) {
+                  console.error('Failed to clear proxy chain:', error)
+                  alert(t('proxies.page.chain.disconnectFailed'))
+                } finally {
+                  setIsConnecting(false)
+                }
               }}
               sx={{
                 color: theme.palette.error.main,

@@ -11,6 +11,10 @@
 <details>
 <summary><strong> 🐞 修复问题 </strong></summary>
 
+- Allow choosing individual automatic-chain relays and recover through verified backups while reconnecting affected traffic.
+
+- Restore original proxy links when disconnecting a manual chain without restarting the application.
+
 - Fix slow automatic chains being rejected, conflicting Claude relay selection, and misleading healthy status.
 
 - Keep automatic chains stable between ten-minute scans and allow pinning a relay until it fails.

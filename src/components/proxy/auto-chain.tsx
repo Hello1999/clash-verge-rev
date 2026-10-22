@@ -45,8 +45,12 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const [busy, setBusy] = useState(false)
   const [exit, setExit] = useState<AutoChainExit | null>(null)
   const [sources, setSources] = useState<string[] | null>(null)
+  const [nodes, setNodes] = useState<{ source: string; name: string }[] | null>(
+    null,
+  )
   const [interval, setInterval] = useState(600)
   const [tolerance, setTolerance] = useState(50)
+  const [timeout, setTimeout] = useState(15000)
   const [url, setUrl] = useState(DEFAULT_URL)
   const saved = verge?.auto_chain
   const enabled = saved?.enabled && saved.profile_uid === profiles?.current
@@ -71,6 +75,31 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const chosenExit = exit ?? savedExit ?? null
   const subscriptions = options.data?.subscriptions ?? []
   const chosenSources = sources ?? subscriptions.map((source) => source.source)
+  const entries = (options.data?.entries ?? []).filter(
+    (node) =>
+      (!sources ||
+        sources.some(
+          (source) =>
+            node.source === source ||
+            node.source.startsWith(`${source}/provider/`),
+        )) &&
+      node.route_id !== chosenExit?.route_id,
+  )
+  const chosenNodes =
+    nodes === null
+      ? entries
+      : entries.filter((node) =>
+          nodes.some(
+            (saved) => saved.source === node.source && saved.name === node.name,
+          ),
+        )
+  const unavailableNodes =
+    nodes?.filter(
+      (node) =>
+        !entries.some(
+          (entry) => entry.source === node.source && entry.name === node.name,
+        ),
+    ) ?? []
   const subscriptionLabel = (source: {
     source: string
     label: string
@@ -81,15 +110,24 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
   const show = () => {
     setExit(null)
     setSources(saved?.entry_sources ?? null)
+    setNodes(saved?.entry_nodes ?? null)
     setInterval(Math.max(saved?.interval ?? 600, 600))
     setTolerance(saved?.tolerance ?? 50)
+    setTimeout(saved?.timeout ?? 15000)
     setUrl(saved?.url ?? DEFAULT_URL)
     setOpen(true)
     void options.refetch()
   }
 
   const apply = async () => {
-    if (!profiles?.current || !chosenExit || !chosenSources.length) return
+    if (
+      !profiles?.current ||
+      !chosenExit ||
+      !chosenSources.length ||
+      !chosenNodes.length ||
+      unavailableNodes.length
+    )
+      return
     setBusy(true)
     try {
       await patchVerge({
@@ -97,10 +135,12 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
           enabled: true,
           profile_uid: profiles.current,
           entry_sources: sources,
+          entry_nodes: nodes,
           exit_source: chosenExit.source,
           exit_name: chosenExit.name,
           interval,
           tolerance,
+          timeout,
           max_latency: saved?.max_latency ?? 1000,
           url,
         },
@@ -269,6 +309,56 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                 />
               )}
             />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={nodes === null}
+                  disabled={busy}
+                  onChange={(_, checked) => setNodes(checked ? null : [])}
+                />
+              }
+              label={t('proxies.autoChain.allNodes')}
+            />
+            <Autocomplete
+              multiple
+              limitTags={3}
+              disableCloseOnSelect
+              options={entries}
+              value={chosenNodes}
+              onChange={(_, values) =>
+                setNodes(values.map(({ source, name }) => ({ source, name })))
+              }
+              getOptionLabel={(node) => `${node.name} (${node.source_label})`}
+              isOptionEqualToValue={(a, b) =>
+                a.source === b.source && a.name === b.name
+              }
+              disabled={busy}
+              loading={options.isFetching}
+              renderOption={(props, option, { selected }) => {
+                const { key, ...rest } = props
+                return (
+                  <li key={key} {...rest}>
+                    <Checkbox checked={selected} tabIndex={-1} sx={{ mr: 1 }} />
+                    {option.name} ({option.source_label})
+                  </li>
+                )
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label={t('proxies.autoChain.nodes')}
+                  helperText={t('proxies.autoChain.nodesHelp')}
+                  error={!chosenNodes.length || unavailableNodes.length > 0}
+                />
+              )}
+            />
+            {unavailableNodes.length > 0 && (
+              <Alert severity="warning">
+                {t('proxies.autoChain.missingNodes', {
+                  names: unavailableNodes.map((node) => node.name).join(', '),
+                })}
+              </Alert>
+            )}
             {enabled && status && (
               <AutoChainResults
                 routes={status.routes}
@@ -333,6 +423,15 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                     />
                   </Box>
                   <TextField
+                    type="number"
+                    label={t('proxies.autoChain.timeout')}
+                    helperText={t('proxies.autoChain.timeoutHelp')}
+                    value={timeout}
+                    onChange={(event) => setTimeout(Number(event.target.value))}
+                    disabled={busy}
+                    slotProps={{ htmlInput: { min: 1000, max: 30000 } }}
+                  />
+                  <TextField
                     label={t('proxies.autoChain.url')}
                     value={url}
                     onChange={(event) => setUrl(event.target.value)}
@@ -365,11 +464,15 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
               busy ||
               !chosenExit ||
               !chosenSources.length ||
+              !chosenNodes.length ||
+              unavailableNodes.length > 0 ||
               !profiles?.current ||
               interval < 600 ||
               interval > 3600 ||
               tolerance < 0 ||
               tolerance > 1000 ||
+              timeout < 1000 ||
+              timeout > 30000 ||
               !url.startsWith('https://')
             }
           >

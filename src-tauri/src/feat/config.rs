@@ -341,6 +341,11 @@ pub(super) async fn apply_verge_patch_locked(
     }
     if patch.claude_guard_enabled == Some(true) || patch.auto_chain.as_ref().is_some_and(|settings| settings.enabled) {
         handle::Handle::mihomo().close_all_connections().await?;
+    } else if patch.auto_chain.is_some() {
+        crate::core::auto_chain::close_connections(&[crate::enhance::auto_chain::GROUP]).await?;
+    }
+    if patch.auto_chain.is_some() {
+        crate::core::auto_chain::settings_changed();
     }
     Ok(())
 }
