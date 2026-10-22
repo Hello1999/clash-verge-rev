@@ -45,6 +45,10 @@ fn is_reality_exit(proxy: &Value) -> bool {
 }
 
 pub fn enforce(config: &mut Mapping) {
+    enforce_with_gateway(config, cfg!(target_os = "macos"));
+}
+
+fn enforce_with_gateway(config: &mut Mapping, use_gateway: bool) {
     config.insert("mode".into(), "rule".into());
     config.insert("find-process-mode".into(), "always".into());
     let mut proxies = config
@@ -59,46 +63,72 @@ pub fn enforce(config: &mut Mapping) {
         .cloned()
         .unwrap_or_default();
     groups.retain(|group| group.get("name").and_then(Value::as_str) != Some(OUTBOUND));
-    let group_names: Vec<_> = groups
-        .iter()
-        .filter_map(|g| g.get("name").and_then(Value::as_str))
-        .collect();
-    let mut routes = Vec::new();
-    for proxy in &mut proxies {
-        if is_fixed_exit(proxy) {
-            let name = proxy["name"].as_str().unwrap_or_default();
-            // Name collisions must not redirect a fixed endpoint through a group.
-            if !group_names.contains(&name) {
-                routes.push(Value::from(name));
-                if let Some(proxy) = proxy.as_mapping_mut() {
-                    proxy.insert("udp".into(), false.into());
+    if use_gateway {
+        // The local gate verifies the fixed exit and fails closed independently
+        // of subscription names. Never add an alternate route around it.
+        let mut gateway = Mapping::new();
+        gateway.insert("name".into(), OUTBOUND.into());
+        gateway.insert("type".into(), "http".into());
+        gateway.insert("server".into(), "127.0.0.1".into());
+        gateway.insert("port".into(), 17891.into());
+        gateway.insert("udp".into(), false.into());
+        proxies.push(gateway.into());
+    } else {
+        let group_names: Vec<_> = groups
+            .iter()
+            .filter_map(|g| g.get("name").and_then(Value::as_str))
+            .collect();
+        let mut routes = Vec::new();
+        for proxy in &mut proxies {
+            if is_fixed_exit(proxy) {
+                let name = proxy["name"].as_str().unwrap_or_default();
+                // Name collisions must not redirect a fixed endpoint through a group.
+                if !group_names.contains(&name) {
+                    routes.push(Value::from(name));
+                    if let Some(proxy) = proxy.as_mapping_mut() {
+                        proxy.insert("udp".into(), false.into());
+                    }
                 }
             }
         }
+        // Use complete chains when available; never fall back to a bare relay or DIRECT.
+        let chained: Vec<_> = routes
+            .iter()
+            .filter(|r| r.as_str().is_some_and(|s| s.starts_with("CV Chain / ")))
+            .cloned()
+            .collect();
+        let use_auto_chain = groups.iter().any(|group| {
+            group.get("name").and_then(Value::as_str) == Some(super::auto_chain::GROUP)
+                && group
+                    .get("proxies")
+                    .and_then(Value::as_sequence)
+                    .is_some_and(|members| {
+                        members.iter().any(|name| chained.contains(name))
+                            && members
+                                .iter()
+                                .all(|name| name.as_str() == Some("REJECT") || chained.contains(name))
+                    })
+        });
+        if use_auto_chain {
+            routes = vec![Value::from(super::auto_chain::GROUP)];
+        } else if routes.contains(&Value::from(REALITY_EXIT)) {
+            routes = vec![Value::from(REALITY_EXIT)];
+        } else if !chained.is_empty() {
+            routes = chained;
+        }
+        if routes.is_empty() {
+            routes.push("REJECT".into());
+        }
+        let mut group = Mapping::new();
+        group.insert("name".into(), OUTBOUND.into());
+        group.insert("type".into(), if use_auto_chain { "select" } else { "url-test" }.into());
+        group.insert("proxies".into(), routes.into());
+        group.insert("url".into(), "https://www.gstatic.com/generate_204".into());
+        group.insert("interval".into(), 60.into());
+        group.insert("timeout".into(), 15000.into());
+        group.insert("lazy".into(), true.into());
+        groups.push(group.into());
     }
-    // Use complete chains when available; never fall back to a bare relay or DIRECT.
-    let chained: Vec<_> = routes
-        .iter()
-        .filter(|r| r.as_str().is_some_and(|s| s.starts_with("CV Chain / ")))
-        .cloned()
-        .collect();
-    if routes.contains(&Value::from(REALITY_EXIT)) {
-        routes = vec![Value::from(REALITY_EXIT)];
-    } else if !chained.is_empty() {
-        routes = chained;
-    }
-    if routes.is_empty() {
-        routes.push("REJECT".into());
-    }
-    let mut group = Mapping::new();
-    group.insert("name".into(), OUTBOUND.into());
-    group.insert("type".into(), "url-test".into());
-    group.insert("proxies".into(), routes.into());
-    group.insert("url".into(), "https://www.gstatic.com/generate_204".into());
-    group.insert("interval".into(), 60.into());
-    group.insert("timeout".into(), 2000.into());
-    group.insert("lazy".into(), true.into());
-    groups.push(group.into());
     config.insert("proxies".into(), proxies.into());
     config.insert("proxy-groups".into(), groups.into());
     enforce_dns(config);
@@ -320,12 +350,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gateway_survives_subscription_changes_and_shadowed_names() {
+        for name in ["JP2-HY2-SOCKS", "renamed relay", "JP-REALITY-SOCKS"] {
+            let mut config: Mapping = serde_yaml_ng::from_str(&format!(
+                "proxies: [{{name: '{name}', type: direct}}, {{name: CV Claude Protected, type: direct}}]\nproxy-groups: [{{name: CV Claude Protected, type: select, proxies: [DIRECT]}}]\nrules: ['MATCH,DIRECT']"
+            )).expect("fixture");
+            enforce_with_gateway(&mut config, true);
+            let proxies = config["proxies"].as_sequence().expect("proxies");
+            let gateway = proxies
+                .iter()
+                .find(|p| p["name"].as_str() == Some(OUTBOUND))
+                .expect("gate");
+            assert_eq!(gateway["type"].as_str(), Some("http"));
+            assert_eq!(gateway["server"].as_str(), Some("127.0.0.1"));
+            assert_eq!(gateway["port"].as_u64(), Some(17891));
+            assert_eq!(gateway["udp"], Value::Bool(false));
+            assert!(config["proxy-groups"].as_sequence().expect("groups").is_empty());
+            assert_eq!(config["listeners"][0]["proxy"].as_str(), Some(OUTBOUND));
+            assert_eq!(
+                config["dns"]["nameserver-policy"]["+.claude.ai"][0].as_str(),
+                Some("https://1.1.1.1/dns-query#CV Claude Protected")
+            );
+            let once = config.clone();
+            enforce_with_gateway(&mut config, true);
+            assert_eq!(config, once);
+        }
+    }
+
+    #[test]
+    fn protected_traffic_follows_the_verified_auto_chain_selection() {
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            "proxies:\n- {name: 'CV Chain / Relay', type: socks5, server: 103.5.250.92, port: 443, dialer-proxy: Relay}\n- {name: Relay, type: socks5, server: 127.0.0.1, port: 1080}\nproxy-groups:\n- {name: CV Auto Chain, type: select, proxies: [REJECT, 'CV Chain / Relay']}\nrules: ['MATCH,CV Auto Chain']"
+        ).expect("fixture");
+        enforce_with_gateway(&mut config, false);
+        assert_eq!(config["proxy-groups"][1]["type"].as_str(), Some("select"));
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"],
+            Value::Sequence(vec![super::super::auto_chain::GROUP.into()])
+        );
+        let once = config.clone();
+        enforce_with_gateway(&mut config, false);
+        assert_eq!(config, once);
+        config["proxy-groups"][0]["proxies"]
+            .as_sequence_mut()
+            .expect("members")
+            .push("DIRECT".into());
+        enforce_with_gateway(&mut config, false);
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"],
+            Value::Sequence(vec!["CV Chain / Relay".into()])
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
     fn reality_exit_and_lan_routes_survive_regeneration() {
         let mut config: Mapping = serde_yaml_ng::from_str(
             "proxies:\n- {name: JP-REALITY-SOCKS, type: vless, tls: true, reality-opts: {public-key: fixture}, server: example.com, port: 443}\n- {name: 'CV Chain / Japan', type: socks5, server: 103.5.250.92, port: 443, dialer-proxy: Relay}\nproxy-groups: [{name: Japan, type: select, proxies: [JP-REALITY-SOCKS]}]\nrules: ['IP-CIDR,192.168.0.0/16,Japan,no-resolve', 'MATCH,Japan']\n"
         ).expect("fixture");
         for _ in 0..3 {
-            enforce(&mut config);
+            enforce_with_gateway(&mut config, false);
             assert_eq!(
                 config["proxy-groups"][1]["proxies"],
                 Value::Sequence(vec![REALITY_EXIT.into()])
@@ -346,7 +430,7 @@ mod tests {
                 .expect("subscription");
             assert!(guard < local && local < conflicting);
             let once = config.clone();
-            enforce(&mut config);
+            enforce_with_gateway(&mut config, false);
             assert_eq!(config, once);
             config = serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&config).expect("serialize")).expect("reload");
         }
@@ -363,7 +447,7 @@ mod tests {
             let mut config: Mapping = serde_yaml_ng::from_str(&format!(
                 "proxies: [{proxy}]\nproxy-groups: [{{name: JP-REALITY-SOCKS, type: select, proxies: [DIRECT]}}]\nrules: ['MATCH,DIRECT']\n"
             )).expect("fixture");
-            enforce(&mut config);
+            enforce_with_gateway(&mut config, false);
             assert_eq!(config["proxy-groups"][1]["proxies"][0].as_str(), Some("REJECT"));
         }
     }
@@ -373,7 +457,7 @@ mod tests {
         let mut config: Mapping = serde_yaml_ng::from_str(
             "tun: {enable: false, dns-hijack: ['any:53']}\ndns:\n  nameserver: [223.5.5.5]\n  nameserver-policy:\n    api.anthropic.com: [223.5.5.5]\n    '+.claude.ai': [8.8.8.8]\n    st.dl.eccdnx.com: [192.168.5.1]\n"
         ).expect("fixture");
-        enforce(&mut config);
+        enforce_with_gateway(&mut config, false);
         assert_eq!(config["tun"]["enable"], Value::Bool(false));
         assert_eq!(config["tun"]["dns-hijack"].as_sequence().expect("hijack").len(), 2);
         let dns = &config["dns"];
@@ -392,7 +476,7 @@ mod tests {
         }
         assert_eq!(config["proxy-groups"][0]["proxies"][0].as_str(), Some("REJECT"));
         let once = config.clone();
-        enforce(&mut config);
+        enforce_with_gateway(&mut config, false);
         assert_eq!(config, once);
     }
 
@@ -401,13 +485,13 @@ mod tests {
         let mut config: Mapping = serde_yaml_ng::from_str(
             "mode: global\nproxies:\n- {name: CV Claude Protected, type: http, server: 127.0.0.1, port: 17891}\n- {name: Japan, type: socks5, server: 1.2.3.4, port: 443}\nrules: ['MATCH,DIRECT']\n"
         ).expect("fixture");
-        enforce(&mut config);
+        enforce_with_gateway(&mut config, false);
         assert_eq!(config["proxy-groups"][0]["proxies"][0].as_str(), Some("REJECT"));
         assert_eq!(config["proxies"].as_sequence().expect("proxies").len(), 1);
         assert_eq!(config["listeners"][0]["proxy"].as_str(), Some(OUTBOUND));
         assert_eq!(config["listeners"][0]["port"].as_u64(), Some(7898));
         let once = config.clone();
-        enforce(&mut config);
+        enforce_with_gateway(&mut config, false);
         assert_eq!(config, once);
     }
 
@@ -416,7 +500,7 @@ mod tests {
         let mut config: Mapping = serde_yaml_ng::from_str(
             "proxies:\n- {name: Exit, type: socks5, server: 103.5.250.92, port: 443}\n- {name: 'CV Chain / Japan', type: socks5, server: 103.5.250.92, port: 443, dialer-proxy: Japan}\n- {name: Japan, type: socks5, server: 1.2.3.4, port: 443}\n- {name: WrongType, type: direct, server: 103.5.250.92, port: 443}\nproxy-groups:\n- {name: Main, type: select, proxies: [Japan, DIRECT]}\nrules: ['MATCH,Main']"
         ).expect("fixture");
-        enforce(&mut config);
+        enforce_with_gateway(&mut config, false);
         assert_eq!(
             config["proxy-groups"][1]["proxies"],
             Value::Sequence(vec!["CV Chain / Japan".into()])
@@ -439,16 +523,17 @@ mod tests {
                 .any(|r| r.as_str() == Some("PROCESS-NAME,claude.exe,CV Claude Protected"))
         );
         let once = config.clone();
-        enforce(&mut config);
+        enforce_with_gateway(&mut config, false);
         assert_eq!(config, once);
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn domestic_routes_survive_cached_runtime_and_keep_protection_first() {
         let mut config: Mapping = serde_yaml_ng::from_str("tun: {enable: false}\nrules: ['MATCH,Japan']\nproxy-groups: [{name: Japan, type: select, proxies: [REJECT]}]\n").expect("fixture");
         for _ in 0..3 {
             config.insert("rules".into(), vec![Value::from("MATCH,Japan")].into());
-            enforce(&mut config);
+            enforce_with_gateway(&mut config, false);
             let rules = config["rules"].as_sequence().expect("rules");
             let domestic = rules
                 .iter()

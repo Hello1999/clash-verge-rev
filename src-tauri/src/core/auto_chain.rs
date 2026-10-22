@@ -26,7 +26,7 @@ async fn active_settings() -> Option<AutoChainSettings> {
         .filter(|settings| settings.active_for(&profiles))
 }
 
-const PROBE_TIMEOUT: u32 = 5000;
+const PROBE_TIMEOUT: u32 = 15000;
 
 static MANUAL: tokio::sync::Mutex<Option<(AutoChainSettings, String)>> = tokio::sync::Mutex::const_new(None);
 static SCAN: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -75,6 +75,19 @@ impl SelectionState {
         current == "REJECT"
             || self.failures >= 2
             || (!manual && review && delay.is_some_and(|delay| u64::from(delay) > u64::from(best) + tolerance))
+    }
+
+    fn replacement(
+        &self,
+        current: &str,
+        delay: Option<u32>,
+        best: Option<(u32, String)>,
+        tolerance: u64,
+        review: bool,
+        manual: bool,
+    ) -> Option<String> {
+        best.filter(|(best, _)| self.should_switch(current, delay, *best, tolerance, review, manual))
+            .map(|(_, name)| name)
     }
 
     fn switched(&mut self, name: &str) {
@@ -142,7 +155,7 @@ async fn probe_active_routes(settings: &AutoChainSettings, selection: &mut Selec
     if !failed && (!review || manual_choice.as_deref() == Some(current)) {
         return Ok(());
     }
-    if failed {
+    if failed && selection.failures == 2 {
         SCAN.notify_one();
     }
     let mut ranked: Vec<_> = group
@@ -173,22 +186,14 @@ async fn probe_active_routes(settings: &AutoChainSettings, selection: &mut Selec
     .into_iter()
     .flatten()
     .min_by_key(|(delay, _)| *delay);
-    let next = match best {
-        Some((delay, name))
-            if selection.should_switch(
-                current,
-                current_delay,
-                delay,
-                settings.tolerance,
-                review,
-                manual_choice.as_deref() == Some(current),
-            ) =>
-        {
-            Some(name)
-        }
-        _ if failed && current != "REJECT" => Some("REJECT".to_owned()),
-        _ => None,
-    };
+    let next = selection.replacement(
+        current,
+        current_delay,
+        best,
+        settings.tolerance,
+        review,
+        manual_choice.as_deref() == Some(current),
+    );
     if let Some(next) = next {
         let _write = Config::lock_config_write().await;
         if active_settings().await.as_ref() == Some(settings)
@@ -220,7 +225,7 @@ async fn scan_routes(settings: &AutoChainSettings) -> Result<()> {
             probe(&name, settings).await;
         }
     }))
-    .buffer_unordered(4);
+    .buffer_unordered(2);
     while pending.next().await.is_some() {}
     Ok(())
 }
@@ -313,6 +318,18 @@ pub fn start() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_backup_checks_never_replace_the_current_route_with_reject() {
+        let mut state = SelectionState::default();
+        state.observe("current", None);
+        state.observe("current", None);
+        assert_eq!(state.replacement("current", None, None, 50, false, true), None);
+        assert_eq!(
+            state.replacement("current", None, Some((8300, "backup".into())), 50, false, true),
+            Some("backup".into())
+        );
+    }
 
     #[test]
     fn legacy_short_intervals_still_wait_ten_minutes() {

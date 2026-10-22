@@ -169,7 +169,14 @@ pub async fn get_auto_chain_status() -> CmdResult<Option<AutoChainStatus>> {
         .now
         .as_deref()
         .and_then(state)
-        .and_then(|state| state.history.last());
+        .and_then(|state| state.history.last())
+        .filter(|sample| {
+            chrono::DateTime::parse_from_rfc3339(&sample.time)
+                .ok()
+                .is_some_and(|checked| {
+                    (0..=45).contains(&chrono::Utc::now().signed_duration_since(checked).num_seconds())
+                })
+        });
     let in_use = Config::runtime()
         .await
         .data_arc()
@@ -232,7 +239,22 @@ pub async fn get_claude_guard_status() -> CmdResult<serde_json::Value> {
         .and_then(|p| p.proxies.get(OUTBOUND))
         .and_then(|p| p.all.as_ref());
     let routing_ready = enabled
-        && members.is_some_and(|names| !names.is_empty() && names.iter().all(|name| routes.contains(&name.as_str())));
+        && members.is_some_and(|names| {
+            !names.is_empty()
+                && names.iter().all(|name| {
+                    routes.contains(&name.as_str())
+                        || (name == crate::enhance::auto_chain::GROUP
+                            && live.as_ref().and_then(|p| p.proxies.get(name)).is_some_and(|group| {
+                                group.now.as_deref().is_some_and(|selected| routes.contains(&selected))
+                                    && group.all.as_ref().is_some_and(|members| {
+                                        !members.is_empty()
+                                            && members
+                                                .iter()
+                                                .all(|member| member == "REJECT" || routes.contains(&member.as_str()))
+                                    })
+                            }))
+                })
+        });
     Ok(serde_json::json!({
         "enabled": enabled, "locked": cfg!(target_os = "windows"),
         "routing_ready": routing_ready, "exit_verified": false,

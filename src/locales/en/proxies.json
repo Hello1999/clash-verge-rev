@@ -130,7 +130,7 @@
     "interval": "Full scan interval (seconds)",
     "tolerance": "Minimum improvement at periodic review (ms)",
     "url": "HTTPS test URL",
-    "hint": "Monitor the current chain continuously and fail over after two consecutive failures. Scan every 10 minutes (or the longer configured interval) to choose a faster route. Click a tested node to pin its relay until it fails. Existing connections may need to reconnect.",
+    "hint": "Allow 15 seconds for complete-chain handshakes and seek a replacement after two consecutive failures. Keep the current route until a replacement is verified; scan at most two routes concurrently. Scan every 10 minutes (or the longer configured interval) to choose a faster route. Click a tested node to pin its relay until it fails. Existing connections may need to reconnect.",
     "running": "Monitoring · {{healthy}} / {{total}} routes healthy",
     "recovering": "No healthy route yet. Probing continues automatically.",
     "notSelected": "Loading the automatic chain; connection will start automatically.",

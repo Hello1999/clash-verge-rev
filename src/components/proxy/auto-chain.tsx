@@ -167,7 +167,9 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
               </Typography>
             </Box>
             {enabled && (
-              <Alert severity={live.error || !healthy ? 'warning' : 'success'}>
+              <Alert
+                severity={live.error || !status?.delay ? 'warning' : 'success'}
+              >
                 <Typography variant="body2">
                   {live.error
                     ? t('proxies.autoChain.unavailable')
@@ -175,7 +177,7 @@ export const AutoChain = ({ onEnabled }: { onEnabled: () => void }) => {
                       ? t('proxies.autoChain.notSelected')
                       : status?.total === 0
                         ? t('proxies.autoChain.noCandidates')
-                        : healthy
+                        : status?.delay
                           ? t('proxies.autoChain.running', {
                               healthy,
                               total: status?.total ?? 0,

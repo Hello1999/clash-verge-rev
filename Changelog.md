@@ -11,6 +11,8 @@
 <details>
 <summary><strong> 🐞 修复问题 </strong></summary>
 
+- Fix slow automatic chains being rejected, conflicting Claude relay selection, and misleading healthy status.
+
 - Keep automatic chains stable between ten-minute scans and allow pinning a relay until it fails.
 
 - Fix automatic chains passing health checks while traffic bypasses them and their status is shown incorrectly.
@@ -34,6 +36,8 @@
 - 优化 Windows 服务安全检查失败提示：用易懂的文字说明原因，并提供修复文档链接
 
 **🍎 macOS**
+
+- Fix Claude protection losing its verified gateway after subscription or relay changes.
 
 - macOS 修复编辑规则时「规则内容」输入的首字母被自动转为大写的问题
 - macOS 修复残留的服务进程导致内核无法启动、「继续使用 Sidecar」失败且无法修复的问题
