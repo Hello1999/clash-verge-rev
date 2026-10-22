@@ -29,6 +29,7 @@
 
 **🖥️ Windows**
 
+- Fix Claude access after switching to the new fixed-exit profile or renaming its nodes.
 - Fix direct-access protection for updated Claude versions and automatically cover new installation paths.
 - Fix browser connectivity when enabling the system proxy fails with error `0x80070057`.
 - Fix Claude protection for `JP-REALITY-SOCKS` across profile refreshes and restarts without falling back to ordinary nodes.

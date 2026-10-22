@@ -26,6 +26,7 @@ pub fn check_mode(requested: bool, mode: &str) -> Result<(), &'static str> {
 
 pub fn is_fixed_exit(proxy: &Value) -> bool {
     is_reality_exit(proxy)
+        || is_hysteria_exit(proxy)
         || (proxy.get("type").and_then(Value::as_str) == Some("socks5")
             && proxy.get("server").and_then(Value::as_str) == Some(EXPECTED_EXIT)
             && proxy.get("port").and_then(Value::as_u64) == Some(443)
@@ -33,6 +34,21 @@ pub fn is_fixed_exit(proxy: &Value) -> bool {
                 .get("name")
                 .and_then(Value::as_str)
                 .is_some_and(|name| name != OUTBOUND))
+}
+
+fn is_hysteria_exit(proxy: &Value) -> bool {
+    // This authenticated inbound terminates at the fixed SOCKS exit; port 24443 does not.
+    cfg!(target_os = "windows")
+        && proxy.get("type").and_then(Value::as_str) == Some("hysteria2")
+        && proxy.get("server").and_then(Value::as_str) == Some("45.76.49.46")
+        && proxy.get("port").and_then(Value::as_u64) == Some(24444)
+        && proxy.get("sni").and_then(Value::as_str) == Some("jp2.yanwenjie.space")
+        && proxy.get("skip-cert-verify").and_then(Value::as_bool) == Some(false)
+        && proxy.get("dialer-proxy").is_none()
+        && proxy
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name != OUTBOUND)
 }
 
 fn is_reality_exit(proxy: &Value) -> bool {
@@ -348,6 +364,58 @@ fn enforce_dns(config: &mut Mapping) {
 #[allow(clippy::expect_used, reason = "tests assert valid fixtures")]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn pinned_hysteria_exit_survives_renames_and_rejects_unsafe_variants() {
+        let proxy: Value = serde_yaml_ng::from_str(
+            "{name: JP2-HY2-SOCKS, type: hysteria2, server: 45.76.49.46, port: 24444, sni: jp2.yanwenjie.space, skip-cert-verify: false}",
+        ).expect("fixture");
+        for name in ["JP2-HY2-SOCKS", "renamed fixed exit"] {
+            let mut node = proxy.clone();
+            node["name"] = name.into();
+            let mut config: Mapping = serde_yaml_ng::from_str(
+                "proxy-groups: [{name: Japan2, type: select, proxies: [DIRECT]}]\nrules: ['MATCH,Japan2']",
+            )
+            .expect("fixture");
+            config.insert("proxies".into(), vec![node].into());
+            enforce(&mut config);
+            assert_eq!(config["proxy-groups"][1]["proxies"], Value::Sequence(vec![name.into()]));
+            assert_eq!(config["proxies"][0]["udp"], Value::Bool(false));
+            let once = config.clone();
+            enforce(&mut config);
+            assert_eq!(config, once);
+        }
+        for (field, value) in [
+            ("server", Value::from("203.0.113.1")),
+            ("port", Value::from(24443)),
+            ("type", Value::from("direct")),
+            ("sni", Value::from("untrusted.example")),
+            ("skip-cert-verify", Value::Bool(true)),
+            ("skip-cert-verify", Value::Null),
+            ("dialer-proxy", Value::from("Japan2")),
+        ] {
+            let mut node = proxy.clone();
+            node[field] = value;
+            let mut config: Mapping = serde_yaml_ng::from_str("rules: ['MATCH,DIRECT']").expect("fixture");
+            config.insert("proxies".into(), vec![node].into());
+            enforce(&mut config);
+            assert_eq!(
+                config["proxy-groups"][0]["proxies"],
+                Value::Sequence(vec!["REJECT".into()])
+            );
+        }
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            "proxy-groups: [{name: JP2-HY2-SOCKS, type: select, proxies: [DIRECT]}]\nrules: ['MATCH,DIRECT']",
+        )
+        .expect("fixture");
+        config.insert("proxies".into(), vec![proxy].into());
+        enforce(&mut config);
+        assert_eq!(
+            config["proxy-groups"][1]["proxies"],
+            Value::Sequence(vec!["REJECT".into()])
+        );
+    }
 
     #[test]
     fn gateway_survives_subscription_changes_and_shadowed_names() {
