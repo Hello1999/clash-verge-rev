@@ -335,7 +335,7 @@ Windows 端采用 **WFP 持久过滤 + Defender 防火墙独立规则组** 双�
    - Clash TUN 网卡 `Meta` 固定提供虚拟 DNS `198.18.0.2`（`198.18.0.0/30` on-link），并由 `tun.dns-hijack: [any:53, tcp://any:53]` 接管。
    - 因此加固脚本执行两步联动：
      1. 通过 `Add-DnsClientNrptRule` 为全部 20 个后缀（同时写入根域 `domain` 与后缀 `.domain`，共 40 条）+ 6 个精确主机名（6 条），合计 **46 条命名空间**指定 `-NameServers 198.18.0.2`（标签 `ClaudeGuardHardeningV3`）。
-     2. 在 Defender 防火墙创建 `ClaudeGuardV3-NrptDnsNonMeta-Block`，在所有非 `Meta` 网卡（`以太网`、`WLAN`、`vEthernet` 等）上出站阻断 `198.18.0.2`。
+     2. 在 Defender 防火墙按真实 IPv4 网卡逐条创建 `ClaudeGuardV3-NrptDnsNonMeta-<hash>`，在所有非 `Meta` 且存在于 `Get-NetIPInterface -AddressFamily IPv4` 的网卡（`以太网`、`WLAN`、`vEthernet (Default Switch)` 等）上出站阻断 `198.18.0.2`（自动过滤无 IPv4 绑定的 Hyper-V 容器网卡如 `vEthernet (FSE HostVnic)` 及蓝牙虚拟网卡，避免 `New-NetFirewallRule -InterfaceAlias` 报 `HRESULT 0x80070057`）。
      - **Clash 运行时**：`198.18.0.2` 走 `Meta` 网卡 → 命中 `tun.dns-hijack` → 按 `nameserver-policy` 走 `1.1.1.1`/`8.8.8.8#CV Claude Protected`（固定出口 `.92`）。
      - **Clash 停止时**：`Meta` 消失 → Windows 尝试经物理网卡发往 `198.18.0.2` → 被防火墙直接丢弃，**零外泄、不触碰 ICS**。
 2. **`C:\Windows\System32\drivers\etc\hosts` 边界**：
@@ -356,7 +356,7 @@ Windows 端采用 **WFP 持久过滤 + Defender 防火墙独立规则组** 双�
 
 1. **构建定制版 Windows 安装包**：
    - 配置文件：[src-tauri/tauri.windows.conf.json](../src-tauri/tauri.windows.conf.json)（产品名 `Clash Verge Auto Chain`、标识 `io.github.hello1999.clash-verge-auto-chain`、自动编译并打包 `claude-guard-manager.exe` 与 `reconcile.ps1`）。
-   - 每次发布新版高于本机已安装版本时递增 `tauri.windows.conf.json` 中的 `version`（例如 `2.5.16`），以允许 NSIS 原地升级。
+   - 每次发布新版高于本机已安装版本时递增 `tauri.windows.conf.json` 中的 `version`（例如 `2.5.16`），以允许 NSIS 原地升级。（注：App 界面内显示的是上游 `package.json`/`Cargo.toml` 基础版本 `2.5.6`，而安装器与已安装 `clash-verge-auto-chain.exe` 的 PE `ProductVersion` 为 `2.5.16`，核验安装版本以 EXE 文件属性或 SHA-256 为准。）
    - 构建命令（需 Node 22/24 + `pnpm` + Rust MSVC + VS C++ Build Tools）：
      ```powershell
      pnpm build
@@ -415,3 +415,18 @@ Windows 端采用 **WFP 持久过滤 + Defender 防火墙独立规则组** 双�
    # 按备份目录精确回滚（仅撤销 Claude Guard Hardening v3 新增项，不动 WFP 与 ProxySettings）
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "windows-package\Harden-WindowsClaudeGuard.ps1" -Action Restore -BackupDirectory "C:\ProgramData\ClashVergeAutoChainProtection\hardening-backups\backup-<TIMESTAMP>"
    ```
+
+### 4.6 Windows 实装验收记录（2026-11-21）与已知边界
+
+- **离线代码与内核实测**：
+  - `cargo test --features clippy --lib enhance`（66 passed）、`claude_guard`（15 passed，含 Windows 专测与纯 IP `sniffer` 单测）、`auto_chain`（20 passed）、`cargo clippy --lib --tests -- -D warnings`（0 errors, 0 warnings）。
+  - 独立临时目录 + `verge-mihomo.exe`（v1.19.31）回环沙盒校验：`JP-REALITY-JP-Residential` / `JP-REALITY-SOCKS` / `JP2-HY2-SOCKS` / `CV Auto Chain` / 仅 `JP-REALITY-Direct` 断闸 5 套配置 `-t` 全部通过；20 后缀（40 根/子域）+ 6 精确域 + 3 IPv4 CIDR + 纯 IP TLS SNI 嗅探全部命中 `CV Claude Protected`；IPv6 `2607:6bc0::/48` 全 `REJECT`；非 Claude 共享域（`stripe.com` / `hcaptcha.com` / 其他 `sentry.io` / `datadoghq.com` 等）、回环/LAN 及国内站无误伤；46 项离线 DNS 查询在受保护出口 `REJECT` 时零外泄。
+  - 安装包 `Clash Verge Auto Chain_2.5.16_x64-setup.exe` 通过 `Verify-Package.ps1` 非执行 7-Zip 载荷哈希核验（7 个可执行文件与 `reconcile.ps1` 一致，无用户配置打包）。
+- **本机部署后只读核对与用户自测**：
+  - 已安装 `clash-verge-auto-chain.exe` PE 版本 `2.5.16` 且 SHA-256 与构建产物逐字节一致；`clash_verge_service_auto_chain`、`verge-mihomo`（`7897`/`7898`）及 `Meta` TUN（`198.18.0.2`）运行正常。
+  - 运行态 `clash-verge.yaml` 核对通过：`mode: rule`、顶端 67 条 Claude 规则排在 `local_access` / `8.134.107.154/32` / `GEOSITE,cn` / `GEOIP,CN` / `MATCH` 之前、26/26 条 Claude DNS 策略均指向 `#CV Claude Protected`、`sniffer` 已启用且含 `skip-dst-address`。
+  - 系统层核对通过：Defender `Claude Guard Hardening v3` 53 条规则生效（Anthropic IPv4/IPv6 全系统阻断 + 3 个非 `Meta` 网卡阻断 `198.18.0.2` + 24/24 Claude & Chrome/Edge 非回环阻断）、WFP 持久过滤 22/22 `Verified: true`、NRPT 46/46 生效、`hosts` 0 冲突、Chrome/Edge HKLM 4 项组策略全部就位；用户完成浏览器重载重启与实网日常/出口测试确认正常。
+- **明确边界**：
+  1. 路径级进程过滤对 Claude 自动更新产生的新路径存在最多 1 分钟的 WFP 计划任务发现窗口；若需同步补齐 Defender `v3` 第二层规则，可随时重跑 `Harden-WindowsClaudeGuard.ps1 -Action Apply`。
+  2. Firefox 未纳入 Chrome/Edge 组策略与回环锁死范围，日常仅作普通浏览器使用，**不要用 Firefox 登录/访问 Claude**。
+  3. 域名与 IP 清单覆盖已知 20 后缀 + 6 精确第三方域 + 4 组官方 AS399358 CIDR；已登记的 Claude 原生进程因被锁死在回环 `7898`，即使未来新增未收录域名仍会被强制送入 `CV Claude Protected`。
