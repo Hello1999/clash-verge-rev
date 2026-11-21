@@ -260,27 +260,46 @@ pub async fn get_claude_guard_status() -> CmdResult<serde_json::Value> {
         .filter_map(|p| p.get("name").and_then(serde_yaml_ng::Value::as_str))
         .collect();
     let live = crate::core::handle::Handle::mihomo().get_proxies().await.ok();
-    let members = live
-        .as_ref()
-        .and_then(|p| p.proxies.get(OUTBOUND))
-        .and_then(|p| p.all.as_ref());
-    let routing_ready = enabled
-        && members.is_some_and(|names| {
-            !names.is_empty()
-                && names.iter().all(|name| {
-                    routes.contains(&name.as_str())
-                        || (name == crate::enhance::auto_chain::GROUP
-                            && live.as_ref().and_then(|p| p.proxies.get(name)).is_some_and(|group| {
-                                group.now.as_deref().is_some_and(|selected| routes.contains(&selected))
-                                    && group.all.as_ref().is_some_and(|members| {
-                                        !members.is_empty()
-                                            && members
-                                                .iter()
-                                                .all(|member| member == "REJECT" || routes.contains(&member.as_str()))
-                                    })
-                            }))
+    let routing_ready = if cfg!(target_os = "macos") {
+        enabled
+            && runtime
+                .config
+                .as_ref()
+                .and_then(|c| c.get("proxies"))
+                .and_then(serde_yaml_ng::Value::as_sequence)
+                .is_some_and(|proxies| {
+                    proxies.iter().any(|p| {
+                        p.get("name").and_then(serde_yaml_ng::Value::as_str) == Some(OUTBOUND)
+                            && p.get("type").and_then(serde_yaml_ng::Value::as_str) == Some("http")
+                            && p.get("server").and_then(serde_yaml_ng::Value::as_str) == Some("127.0.0.1")
+                            && p.get("port").and_then(serde_yaml_ng::Value::as_u64) == Some(17891)
+                            && p.get("udp").and_then(serde_yaml_ng::Value::as_bool) == Some(false)
+                    })
                 })
-        });
+            && live.as_ref().is_some_and(|p| p.proxies.contains_key(OUTBOUND))
+    } else {
+        let members = live
+            .as_ref()
+            .and_then(|p| p.proxies.get(OUTBOUND))
+            .and_then(|p| p.all.as_ref());
+        enabled
+            && members.is_some_and(|names| {
+                !names.is_empty()
+                    && names.iter().all(|name| {
+                        routes.contains(&name.as_str())
+                            || (name == crate::enhance::auto_chain::GROUP
+                                && live.as_ref().and_then(|p| p.proxies.get(name)).is_some_and(|group| {
+                                    group.now.as_deref().is_some_and(|selected| routes.contains(&selected))
+                                        && group.all.as_ref().is_some_and(|members| {
+                                            !members.is_empty()
+                                                && members.iter().all(|member| {
+                                                    member == "REJECT" || routes.contains(&member.as_str())
+                                                })
+                                        })
+                                }))
+                    })
+            })
+    };
     Ok(serde_json::json!({
         "enabled": enabled, "locked": cfg!(target_os = "windows"),
         "routing_ready": routing_ready, "exit_verified": false,

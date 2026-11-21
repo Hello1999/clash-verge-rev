@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, HashSet};
 use crate::{config::IProfiles, utils::dirs};
 
 pub const GROUP: &str = "CV Auto Chain";
+pub const ENTRY_GROUP: &str = "CV Auto Chain Entry";
 pub const PREFIX: &str = "CV Chain / ";
+pub const ENTRY_PREFIX: &str = "CV Chain / entry / ";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct RelaySelection {
@@ -320,7 +322,7 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
         !proxies.iter().chain(groups.iter()).any(|node| {
             node.get("name")
                 .and_then(Value::as_str)
-                .is_some_and(|name| name == GROUP || name.starts_with(PREFIX))
+                .is_some_and(|name| name == GROUP || name == ENTRY_GROUP || name.starts_with(PREFIX))
         }),
         "Reserved automatic chain names already exist in this profile"
     );
@@ -358,7 +360,7 @@ pub fn build(config: &mut Mapping, settings: &AutoChainSettings, catalog: &Catal
                 continue;
             }
             let label = entry.get("name").and_then(Value::as_str).unwrap_or_default();
-            let entry_name = format!("{PREFIX}entry / {id}");
+            let entry_name = format!("{ENTRY_PREFIX}{id}");
             let route_name = format!("{PREFIX}{label} / {}", &id[..12]);
             let mut entry = entry.clone();
             entry.insert("name".into(), entry_name.clone().into());
@@ -394,14 +396,39 @@ pub fn without_generated(mut config: Mapping) -> Mapping {
         });
     }
     if let Some(groups) = config.get_mut("proxy-groups").and_then(Value::as_sequence_mut) {
-        groups.retain(|group| group.get("name").and_then(Value::as_str) != Some(GROUP));
+        groups.retain(|group| {
+            !group
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name == GROUP || name == ENTRY_GROUP)
+        });
         for group in groups {
             if let Some(members) = group.get_mut("proxies").and_then(Value::as_sequence_mut) {
-                members.retain(|name| name.as_str() != Some(GROUP));
+                members.retain(|name| !matches!(name.as_str(), Some(GROUP | ENTRY_GROUP)));
             }
         }
     }
     config
+}
+
+pub fn entry_name_for_route<'a>(route: &str, entries: &'a [String]) -> Option<&'a str> {
+    if route == "REJECT" {
+        return entries
+            .iter()
+            .find(|name| name.as_str() == "REJECT")
+            .map(String::as_str);
+    }
+    let suffix = route.rsplit(" / ").next()?;
+    if suffix.len() != 12 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let prefix = format!("{ENTRY_PREFIX}{suffix}");
+    let mut matches = entries.iter().filter(|name| name.starts_with(&prefix));
+    let matched = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(matched.as_str())
 }
 
 pub fn routes_proxy_traffic(config: &Mapping) -> bool {
@@ -823,5 +850,27 @@ sub-rules:
         build(&mut config, &settings(), &catalog)?;
         assert_eq!(config["proxies"], Value::Sequence(Vec::new()));
         Ok(())
+    }
+
+    #[test]
+    fn entry_name_for_route_resolves_unique_entry_or_fails_closed() {
+        let entries = vec![
+            "REJECT".to_owned(),
+            format!("{ENTRY_PREFIX}0123456789ab0000000000000000000000000000000000000000000000000000"),
+            format!("{ENTRY_PREFIX}fedcba9876541111111111111111111111111111111111111111111111111111"),
+        ];
+        assert_eq!(entry_name_for_route("REJECT", &entries), Some("REJECT"));
+        assert_eq!(
+            entry_name_for_route("CV Chain / HK / 0123456789ab", &entries),
+            Some(entries[1].as_str())
+        );
+        assert_eq!(entry_name_for_route("CV Chain / HK / deadbeef1234", &entries), None);
+        assert_eq!(entry_name_for_route("DIRECT", &entries), None);
+
+        let ambiguous = vec![
+            format!("{ENTRY_PREFIX}0123456789ab1111"),
+            format!("{ENTRY_PREFIX}0123456789ab2222"),
+        ];
+        assert_eq!(entry_name_for_route("CV Chain / HK / 0123456789ab", &ambiguous), None);
     }
 }

@@ -17,7 +17,7 @@ use tauri_plugin_mihomo::models::Extra;
 use crate::{
     config::Config,
     core::{CoreManager, handle::Handle, manager::RunningMode},
-    enhance::auto_chain::{self, AutoChainSettings, GROUP},
+    enhance::auto_chain::{self, AutoChainSettings, ENTRY_GROUP, GROUP},
     process::AsyncHandler,
 };
 
@@ -149,16 +149,28 @@ pub async fn select_route(name: &str) -> Result<()> {
         active_settings().await.as_ref() == Some(&settings),
         "Automatic chain settings changed during the test"
     );
-    let previous = core
-        .get_proxies()
-        .await?
-        .proxies
-        .get(GROUP)
-        .and_then(|group| group.now.clone());
+    let latest = core.get_proxies().await?.proxies;
+    let previous = latest.get(GROUP).and_then(|group| group.now.clone());
     core.select_node_for_group(GROUP, name).await?;
+    if let Some(entry_group) = latest.get(ENTRY_GROUP) {
+        sync_entry_group(
+            entry_group.now.as_deref(),
+            entry_group.all.as_deref().unwrap_or(&[]),
+            name,
+        )
+        .await?;
+    }
     *MANUAL.lock().await = Some((settings, name.to_owned()));
     if let Some(previous) = previous.filter(|previous| previous != name) {
         close_connections(&[&previous]).await?;
+    }
+    Ok(())
+}
+
+async fn sync_entry_group(current_entry: Option<&str>, members: &[String], route: &str) -> Result<()> {
+    let target = auto_chain::entry_name_for_route(route, members).unwrap_or("REJECT");
+    if current_entry != Some(target) {
+        Handle::mihomo().select_node_for_group(ENTRY_GROUP, target).await?;
     }
     Ok(())
 }
@@ -252,6 +264,14 @@ async fn probe_active_routes(settings: &AutoChainSettings, selection: &mut Selec
     let proxies = core.get_proxies().await?.proxies;
     let Some(group) = proxies.get(GROUP) else { return Ok(()) };
     let current = group.now.as_deref().unwrap_or("REJECT");
+    if let Some(entry_group) = proxies.get(ENTRY_GROUP) {
+        sync_entry_group(
+            entry_group.now.as_deref(),
+            entry_group.all.as_deref().unwrap_or(&[]),
+            current,
+        )
+        .await?;
+    }
     let manual_choice = manual_route(settings).await;
     if !selection.stale_routes.is_empty() {
         close_connections(&selection.stale_routes.iter().map(String::as_str).collect::<Vec<_>>()).await?;
@@ -306,17 +326,25 @@ async fn probe_active_routes(settings: &AutoChainSettings, selection: &mut Selec
     );
     if let Some(next) = next {
         let _write = Config::lock_config_write().await;
+        let latest = core.get_proxies().await?.proxies;
         if active_settings().await.as_ref() == Some(settings)
             && manual_route(settings).await == manual_choice
-            && core
-                .get_proxies()
-                .await?
-                .proxies
-                .get(GROUP)
-                .and_then(|group| group.now.as_deref())
-                == Some(current)
+            && latest.get(GROUP).and_then(|group| group.now.as_deref()) == Some(current)
         {
             core.select_node_for_group(GROUP, &next).await?;
+            if let Some(entry_group) = latest.get(ENTRY_GROUP) {
+                let members = entry_group.all.as_deref().unwrap_or(&[]);
+                let next_entry = auto_chain::entry_name_for_route(&next, members).unwrap_or("REJECT");
+                sync_entry_group(entry_group.now.as_deref(), members, &next).await?;
+                if failed
+                    && let Some(old_entry) = entry_group
+                        .now
+                        .as_deref()
+                        .filter(|entry| *entry != "REJECT" && *entry != next_entry)
+                {
+                    selection.stale_routes.push(old_entry.to_owned());
+                }
+            }
             *MANUAL.lock().await = None;
             selection.switched(&next);
             selection.initial_scan |= failed;

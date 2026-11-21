@@ -2,15 +2,47 @@ use serde_yaml_ng::{Mapping, Value};
 
 pub const OUTBOUND: &str = "CV Claude Protected";
 pub const EXPECTED_EXIT: &str = "103.5.250.92";
+pub const EXPECTED_EXIT_PORT: u16 = 443;
 pub const LISTENER_PORT: u16 = 7898;
 pub const REALITY_EXIT: &str = "JP-REALITY-SOCKS";
+pub const REALITY_EXITS: &[&str] = &[REALITY_EXIT, "JP-REALITY-JP-Residential"];
+pub const DIRECT_RELAY: &str = "JP-REALITY-Direct";
 pub const DOMAINS: &[&str] = &[
     "claude.ai",
     "claude.com",
     "anthropic.com",
     "claudeusercontent.com",
     "anthropicusercontent.com",
+    "anthropic.ai",
+    "anthropic.team",
+    "ant.dev",
+    "antspace.dev",
+    "chatbotclaude.com",
+    "clau.de",
+    "claude.app",
+    "claude.dev",
+    "claude.new",
+    "claude.site",
+    "claudeacademy.com",
+    "claudemcpclient.com",
+    "claudemcpcontent.com",
+    "claudepages.dev",
+    "claudestudio.com",
 ];
+pub const EXACT_DOMAINS: &[&str] = &[
+    "servd-anthropic-website.b-cdn.net",
+    "http-intake.logs.us5.datadoghq.com",
+    "browser-intake-us5-datadoghq.com",
+    "o1158394.ingest.us.sentry.io",
+    "collector-pxvl48pwoc.px-cloud.net",
+    "lupk8zyo.messenger.intercom-chat.com",
+];
+// Anthropic PBC official IP ranges (AS399358):
+// - 160.79.104.0/21 covers inbound 160.79.104.0/23 and outbound 160.79.104.0/21
+// - 153.61.224.0/22 (inbound) and 153.61.208.0/20 (outbound)
+pub const IPV4_CIDRS: &[&str] = &["160.79.104.0/21", "153.61.224.0/22", "153.61.208.0/20"];
+// Reject IPv6 directly to prevent IPv6 leaks outside the IPv4-only fixed exit.
+pub const IPV6_CIDRS: &[&str] = &["2607:6bc0::/48"];
 pub const PROCESSES: &[&str] = &["claude.exe", "Claude.exe", "cowork-svc.exe", "chrome-native-host.exe"];
 
 pub fn enabled(requested: Option<bool>) -> bool {
@@ -29,7 +61,7 @@ pub fn is_fixed_exit(proxy: &Value) -> bool {
         || is_hysteria_exit(proxy)
         || (proxy.get("type").and_then(Value::as_str) == Some("socks5")
             && proxy.get("server").and_then(Value::as_str) == Some(EXPECTED_EXIT)
-            && proxy.get("port").and_then(Value::as_u64) == Some(443)
+            && proxy.get("port").and_then(Value::as_u64) == Some(u64::from(EXPECTED_EXIT_PORT))
             && proxy
                 .get("name")
                 .and_then(Value::as_str)
@@ -52,8 +84,20 @@ fn is_hysteria_exit(proxy: &Value) -> bool {
 }
 
 fn is_reality_exit(proxy: &Value) -> bool {
-    // This named profile terminates SOCKS on the server; its VLESS entry is not the egress IP.
-    proxy.get("name").and_then(Value::as_str) == Some(REALITY_EXIT)
+    // These named profiles terminate SOCKS on the server; their VLESS entry is not the egress IP.
+    proxy
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| REALITY_EXITS.contains(&name))
+        && proxy.get("type").and_then(Value::as_str) == Some("vless")
+        && proxy.get("tls").and_then(Value::as_bool) == Some(true)
+        && proxy.get("reality-opts").and_then(Value::as_mapping).is_some()
+        && proxy.get("dialer-proxy").is_none()
+}
+
+fn is_direct_relay(proxy: &Value) -> bool {
+    // Direct VPS relay used to dial the fixed residential SOCKS5 exit without self-hairpinning.
+    proxy.get("name").and_then(Value::as_str) == Some(DIRECT_RELAY)
         && proxy.get("type").and_then(Value::as_str) == Some("vless")
         && proxy.get("tls").and_then(Value::as_bool) == Some(true)
         && proxy.get("reality-opts").and_then(Value::as_mapping).is_some()
@@ -78,7 +122,13 @@ fn enforce_with_gateway(config: &mut Mapping, use_gateway: bool) {
         .and_then(Value::as_sequence)
         .cloned()
         .unwrap_or_default();
-    groups.retain(|group| group.get("name").and_then(Value::as_str) != Some(OUTBOUND));
+    groups.retain(|group| {
+        !group
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name == OUTBOUND || name == super::auto_chain::ENTRY_GROUP)
+    });
+    let mut fixed_exit_relay: Option<String> = None;
     if use_gateway {
         // The local gate verifies the fixed exit and fails closed independently
         // of subscription names. Never add an alternate route around it.
@@ -89,6 +139,55 @@ fn enforce_with_gateway(config: &mut Mapping, use_gateway: bool) {
         gateway.insert("port".into(), 17891.into());
         gateway.insert("udp".into(), false.into());
         proxies.push(gateway.into());
+
+        // Prevent the local fixed-exit backend (17892 -> 7897 -> 103.5.250.92:443)
+        // from hairpinning back through an outbound that already terminates at
+        // 103.5.250.92 (such as CV Auto Chain or JP-REALITY-JP-Residential).
+        let group_names: Vec<_> = groups
+            .iter()
+            .filter_map(|g| g.get("name").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+        if let Some(auto_chain_group) = groups
+            .iter()
+            .find(|g| g.get("name").and_then(Value::as_str) == Some(super::auto_chain::GROUP))
+        {
+            let mut entry_members: Vec<Value> = vec!["REJECT".into()];
+            if let Some(members) = auto_chain_group.get("proxies").and_then(Value::as_sequence) {
+                for member in members.iter().filter_map(Value::as_str) {
+                    if member == "REJECT" {
+                        continue;
+                    }
+                    let Some(dialer) = proxies
+                        .iter()
+                        .find(|p| p.get("name").and_then(Value::as_str) == Some(member))
+                        .and_then(|p| p.get("dialer-proxy"))
+                        .and_then(Value::as_str)
+                    else {
+                        continue;
+                    };
+                    if !dialer.starts_with(super::auto_chain::ENTRY_PREFIX) || group_names.iter().any(|g| g == dialer) {
+                        continue;
+                    }
+                    let valid_entry = proxies.iter().any(|p| {
+                        p.get("name").and_then(Value::as_str) == Some(dialer) && p.get("dialer-proxy").is_none()
+                    });
+                    let entry_val = Value::from(dialer);
+                    if valid_entry && !entry_members.contains(&entry_val) {
+                        entry_members.push(entry_val);
+                    }
+                }
+            }
+            let mut entry_group = Mapping::new();
+            entry_group.insert("name".into(), super::auto_chain::ENTRY_GROUP.into());
+            entry_group.insert("type".into(), "select".into());
+            entry_group.insert("hidden".into(), true.into());
+            entry_group.insert("proxies".into(), entry_members.into());
+            groups.push(entry_group.into());
+            fixed_exit_relay = Some(super::auto_chain::ENTRY_GROUP.to_owned());
+        } else if !group_names.iter().any(|g| g == DIRECT_RELAY) && proxies.iter().any(is_direct_relay) {
+            fixed_exit_relay = Some(DIRECT_RELAY.to_owned());
+        }
     } else {
         let group_names: Vec<_> = groups
             .iter()
@@ -125,10 +224,14 @@ fn enforce_with_gateway(config: &mut Mapping, use_gateway: bool) {
                                 .all(|name| name.as_str() == Some("REJECT") || chained.contains(name))
                     })
         });
+        let preferred_reality = REALITY_EXITS
+            .iter()
+            .find(|name| routes.contains(&Value::from(**name)))
+            .copied();
         if use_auto_chain {
             routes = vec![Value::from(super::auto_chain::GROUP)];
-        } else if routes.contains(&Value::from(REALITY_EXIT)) {
-            routes = vec![Value::from(REALITY_EXIT)];
+        } else if let Some(reality_exit) = preferred_reality {
+            routes = vec![Value::from(reality_exit)];
         } else if !chained.is_empty() {
             routes = chained;
         }
@@ -171,19 +274,40 @@ fn enforce_with_gateway(config: &mut Mapping, use_gateway: bool) {
     let matches: Vec<_> = DOMAINS
         .iter()
         .map(|d| format!("DOMAIN-SUFFIX,{d}"))
+        .chain(EXACT_DOMAINS.iter().map(|d| format!("DOMAIN,{d}")))
         .chain(PROCESSES.iter().map(|p| format!("PROCESS-NAME,{p}")))
         .collect();
     let mut rules: Vec<Value> = matches
         .iter()
         .map(|m| format!("AND,(({m}),(NETWORK,UDP)),REJECT").into())
+        .chain(
+            IPV4_CIDRS
+                .iter()
+                .map(|cidr| format!("AND,((IP-CIDR,{cidr},no-resolve),(NETWORK,UDP)),REJECT").into()),
+        )
+        .chain(
+            IPV6_CIDRS
+                .iter()
+                .map(|cidr| format!("IP-CIDR6,{cidr},REJECT,no-resolve").into()),
+        )
         .chain(matches.iter().map(|m| format!("{m},{OUTBOUND}").into()))
+        .chain(
+            IPV4_CIDRS
+                .iter()
+                .map(|cidr| format!("IP-CIDR,{cidr},{OUTBOUND},no-resolve").into()),
+        )
         .collect();
+    let fixed_exit_prefix =
+        format!("AND,((NETWORK,TCP),(IP-CIDR,{EXPECTED_EXIT}/32,no-resolve),(DST-PORT,{EXPECTED_EXIT_PORT})),");
+    if let Some(relay) = fixed_exit_relay {
+        rules.push(format!("{fixed_exit_prefix}{relay}").into());
+    }
     if cfg!(target_os = "windows") {
         rules.extend(super::local_access::RULES.iter().map(|rule| Value::from(*rule)));
     }
     if let Some(existing) = config.get("rules").and_then(Value::as_sequence) {
         for rule in existing {
-            if !rules.contains(rule) {
+            if !rules.contains(rule) && !rule.as_str().is_some_and(|s| s.starts_with(&fixed_exit_prefix)) {
                 rules.push(rule.clone());
             }
         }
@@ -323,6 +447,9 @@ fn enforce_dns(config: &mut Mapping) {
     }
     for domain in DOMAINS {
         policy.insert(format!("+.{domain}").into(), doh(OUTBOUND));
+    }
+    for domain in EXACT_DOMAINS {
+        policy.insert((*domain).into(), doh(OUTBOUND));
     }
     dns.insert("enable".into(), true.into());
     dns.insert("prefer-h3".into(), false.into());
@@ -638,5 +765,245 @@ mod tests {
         if cfg!(target_os = "windows") {
             assert!(check_mode(false, "direct").is_err());
         }
+    }
+
+    #[test]
+    fn gateway_routes_fixed_exit_through_direct_relay_without_hairpin() {
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            r"
+proxies:
+- {name: JP-REALITY-Direct, type: vless, tls: true, reality-opts: {public-key: fixture}, server: 193.3.174.212, port: 443}
+- {name: JP-REALITY-JP-Residential, type: vless, tls: true, reality-opts: {public-key: fixture}, server: 193.3.174.212, port: 443}
+proxy-groups:
+- {name: Japan, type: select, proxies: [JP-REALITY-Direct, JP-REALITY-JP-Residential]}
+rules:
+- GEOSITE,cn,DIRECT
+- MATCH,Japan
+",
+        )
+        .expect("fixture");
+        enforce_with_gateway(&mut config, true);
+        let rules = config["rules"].as_sequence().expect("rules");
+        let claude_pos = rules
+            .iter()
+            .position(|r| r.as_str() == Some("DOMAIN-SUFFIX,claude.ai,CV Claude Protected"))
+            .expect("claude rule");
+        let relay_pos = rules
+            .iter()
+            .position(|r| {
+                r.as_str()
+                    == Some("AND,((NETWORK,TCP),(IP-CIDR,103.5.250.92/32,no-resolve),(DST-PORT,443)),JP-REALITY-Direct")
+            })
+            .expect("fixed exit relay rule");
+        let match_pos = rules
+            .iter()
+            .position(|r| r.as_str() == Some("MATCH,Japan"))
+            .expect("match rule");
+        assert!(claude_pos < relay_pos && relay_pos < match_pos);
+        assert_eq!(
+            config["dns"]["nameserver-policy"]["+.anthropic.com"][0].as_str(),
+            Some("https://1.1.1.1/dns-query#CV Claude Protected")
+        );
+        let once = config.clone();
+        enforce_with_gateway(&mut config, true);
+        assert_eq!(config, once);
+
+        // A group shadowing JP-REALITY-Direct must never be used as the fixed exit relay.
+        config["proxy-groups"]
+            .as_sequence_mut()
+            .expect("groups")
+            .push(serde_yaml_ng::from_str("name: JP-REALITY-Direct\ntype: select\nproxies: [DIRECT]\n").expect("grp"));
+        enforce_with_gateway(&mut config, true);
+        assert!(
+            !config["rules"]
+                .as_sequence()
+                .expect("rules")
+                .iter()
+                .any(|r| r.as_str().is_some_and(|s| s.contains("103.5.250.92/32")))
+        );
+    }
+
+    #[test]
+    fn gateway_routes_fixed_exit_through_synced_auto_chain_entry_without_hairpin() {
+        let entry = "CV Chain / entry / 0123456789ab0000000000000000000000000000000000000000000000000000";
+        let mut config: Mapping = serde_yaml_ng::from_str(&format!(
+            r"
+proxies:
+- {{name: '{entry}', type: vless, server: 1.2.3.4, port: 443}}
+- {{name: 'CV Chain / HK / 0123456789ab', type: socks5, server: 103.5.250.92, port: 443, dialer-proxy: '{entry}'}}
+proxy-groups:
+- {{name: CV Auto Chain, type: select, proxies: [REJECT, 'CV Chain / HK / 0123456789ab']}}
+rules:
+- MATCH,CV Auto Chain
+"
+        ))
+        .expect("fixture");
+        enforce_with_gateway(&mut config, true);
+        let groups = config["proxy-groups"].as_sequence().expect("groups");
+        let entry_group = groups
+            .iter()
+            .find(|g| g["name"].as_str() == Some(super::super::auto_chain::ENTRY_GROUP))
+            .expect("entry group");
+        assert_eq!(entry_group["type"].as_str(), Some("select"));
+        assert_eq!(entry_group["hidden"], Value::Bool(true));
+        assert_eq!(
+            entry_group["proxies"],
+            Value::Sequence(vec!["REJECT".into(), entry.into()])
+        );
+        let rules = config["rules"].as_sequence().expect("rules");
+        let relay_pos = rules
+            .iter()
+            .position(|r| {
+                r.as_str()
+                    == Some(
+                        "AND,((NETWORK,TCP),(IP-CIDR,103.5.250.92/32,no-resolve),(DST-PORT,443)),CV Auto Chain Entry",
+                    )
+            })
+            .expect("auto chain entry relay rule");
+        let match_pos = rules
+            .iter()
+            .position(|r| r.as_str() == Some("MATCH,CV Auto Chain"))
+            .expect("match");
+        assert!(relay_pos < match_pos);
+        let once = config.clone();
+        enforce_with_gateway(&mut config, true);
+        assert_eq!(config, once);
+
+        // Empty auto chain still fails closed to REJECT and never falls back to DIRECT.
+        config["proxy-groups"][0]["proxies"] = Value::Sequence(vec!["REJECT".into()]);
+        enforce_with_gateway(&mut config, true);
+        let entry_group = config["proxy-groups"]
+            .as_sequence()
+            .expect("groups")
+            .iter()
+            .find(|g| g["name"].as_str() == Some(super::super::auto_chain::ENTRY_GROUP))
+            .expect("entry group");
+        assert_eq!(entry_group["proxies"], Value::Sequence(vec!["REJECT".into()]));
+    }
+
+    #[test]
+    fn reality_exit_accepts_jp_residential_without_accepting_direct_relay() {
+        let residential: Value = serde_yaml_ng::from_str(
+            "{name: JP-REALITY-JP-Residential, type: vless, tls: true, reality-opts: {public-key: fixture}}",
+        )
+        .expect("residential");
+        let direct: Value = serde_yaml_ng::from_str(
+            "{name: JP-REALITY-Direct, type: vless, tls: true, reality-opts: {public-key: fixture}}",
+        )
+        .expect("direct");
+        assert!(is_fixed_exit(&residential));
+        assert!(!is_fixed_exit(&direct));
+    }
+
+    #[test]
+    fn all_anthropic_domains_exact_hosts_and_cidrs_precede_direct_and_have_dns_protection() {
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            r"
+proxies:
+- {name: JP-REALITY-Direct, type: vless, tls: true, reality-opts: {public-key: fixture}, server: 193.3.174.212, port: 443}
+proxy-groups:
+- {name: Japan, type: select, proxies: [JP-REALITY-Direct]}
+rules:
+- GEOSITE,cn,DIRECT
+- GEOIP,CN,DIRECT,no-resolve
+- DOMAIN-SUFFIX,claudemcpcontent.com,CV Claude Protected
+- DOMAIN,http-intake.logs.us5.datadoghq.com,CV Claude Protected
+- MATCH,Japan
+",
+        )
+        .expect("fixture");
+        enforce_with_gateway(&mut config, true);
+        let rules = config["rules"].as_sequence().expect("rules");
+        let direct_pos = rules
+            .iter()
+            .position(|r| r.as_str() == Some("GEOSITE,cn,DIRECT"))
+            .expect("cn direct rule");
+        for domain in DOMAINS {
+            let udp = format!("AND,((DOMAIN-SUFFIX,{domain}),(NETWORK,UDP)),REJECT");
+            let tcp = format!("DOMAIN-SUFFIX,{domain},{OUTBOUND}");
+            let udp_pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(udp.as_str()))
+                .expect("udp");
+            let tcp_pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(tcp.as_str()))
+                .expect("tcp");
+            assert!(
+                udp_pos < direct_pos && tcp_pos < direct_pos,
+                "{domain} must precede DIRECT"
+            );
+            assert_eq!(rules.iter().filter(|r| r.as_str() == Some(tcp.as_str())).count(), 1);
+        }
+        for host in EXACT_DOMAINS {
+            let udp = format!("AND,((DOMAIN,{host}),(NETWORK,UDP)),REJECT");
+            let tcp = format!("DOMAIN,{host},{OUTBOUND}");
+            let udp_pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(udp.as_str()))
+                .expect("udp");
+            let tcp_pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(tcp.as_str()))
+                .expect("tcp");
+            assert!(
+                udp_pos < direct_pos && tcp_pos < direct_pos,
+                "{host} must precede DIRECT"
+            );
+            assert_eq!(rules.iter().filter(|r| r.as_str() == Some(tcp.as_str())).count(), 1);
+        }
+        for cidr in IPV4_CIDRS {
+            let udp = format!("AND,((IP-CIDR,{cidr},no-resolve),(NETWORK,UDP)),REJECT");
+            let tcp = format!("IP-CIDR,{cidr},{OUTBOUND},no-resolve");
+            let udp_pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(udp.as_str()))
+                .expect("udp");
+            let tcp_pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(tcp.as_str()))
+                .expect("tcp");
+            assert!(
+                udp_pos < direct_pos && tcp_pos < direct_pos,
+                "{cidr} must precede DIRECT"
+            );
+        }
+        for cidr6 in IPV6_CIDRS {
+            let v6 = format!("IP-CIDR6,{cidr6},REJECT,no-resolve");
+            let pos = rules
+                .iter()
+                .position(|r| r.as_str() == Some(v6.as_str()))
+                .expect("ipv6");
+            assert!(pos < direct_pos);
+        }
+        let policy = config["dns"]["nameserver-policy"].as_mapping().expect("policy");
+        for domain in DOMAINS {
+            let entries = policy[format!("+.{domain}")].as_sequence().expect("suffix dns");
+            assert!(
+                entries
+                    .iter()
+                    .all(|e| e.as_str().expect("url").ends_with("#CV Claude Protected"))
+            );
+        }
+        for host in EXACT_DOMAINS {
+            let entries = policy[*host].as_sequence().expect("exact dns");
+            assert!(
+                entries
+                    .iter()
+                    .all(|e| e.as_str().expect("url").ends_with("#CV Claude Protected"))
+            );
+        }
+        for shared in [
+            "+.sentry.io",
+            "+.datadoghq.com",
+            "+.b-cdn.net",
+            "+.stripe.com",
+            "+.px-cloud.net",
+        ] {
+            assert!(!policy.contains_key(shared), "must not hijack shared domain {shared}");
+        }
+        let once = config.clone();
+        enforce_with_gateway(&mut config, true);
+        assert_eq!(config, once);
     }
 }
