@@ -251,6 +251,7 @@ fn enforce_with_gateway(config: &mut Mapping, use_gateway: bool) {
     config.insert("proxies".into(), proxies.into());
     config.insert("proxy-groups".into(), groups.into());
     enforce_dns(config);
+    enforce_sniffer(config);
 
     let mut listeners = config
         .get("listeners")
@@ -486,6 +487,45 @@ fn enforce_dns(config: &mut Mapping) {
     }
     tun.insert("dns-hijack".into(), hijack.into());
     config.insert("tun".into(), tun.into());
+}
+
+fn enforce_sniffer(config: &mut Mapping) {
+    let mut tls = Mapping::new();
+    tls.insert("ports".into(), vec![Value::from(443), Value::from(8443)].into());
+    let mut http = Mapping::new();
+    http.insert("ports".into(), vec![Value::from(80), Value::from("8080-8880")].into());
+    let mut quic = Mapping::new();
+    quic.insert("ports".into(), vec![Value::from(443), Value::from(8443)].into());
+
+    let mut sniff = Mapping::new();
+    sniff.insert("TLS".into(), tls.into());
+    sniff.insert("HTTP".into(), http.into());
+    sniff.insert("QUIC".into(), quic.into());
+
+    let mut skip_dst = vec![
+        Value::from(format!("{EXPECTED_EXIT}/32")),
+        Value::from("127.0.0.0/8"),
+        Value::from("10.0.0.0/8"),
+        Value::from("172.16.0.0/12"),
+        Value::from("192.168.0.0/16"),
+        Value::from("169.254.0.0/16"),
+        Value::from("::1/128"),
+        Value::from("fc00::/7"),
+        Value::from("fe80::/10"),
+    ];
+    if cfg!(target_os = "windows") {
+        skip_dst.push(Value::from("8.134.107.154/32"));
+    }
+
+    let mut sniffer = Mapping::new();
+    sniffer.insert("enable".into(), true.into());
+    sniffer.insert("force-dns-mapping".into(), true.into());
+    sniffer.insert("parse-pure-ip".into(), true.into());
+    // Match sniffed hosts against domain rules without rewriting IP-pinned destinations.
+    sniffer.insert("override-destination".into(), false.into());
+    sniffer.insert("sniff".into(), sniff.into());
+    sniffer.insert("skip-dst-address".into(), skip_dst.into());
+    config.insert("sniffer".into(), sniffer.into());
 }
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests assert valid fixtures")]
@@ -1004,6 +1044,54 @@ rules:
         }
         let once = config.clone();
         enforce_with_gateway(&mut config, true);
+        assert_eq!(config, once);
+    }
+
+    #[test]
+    fn sniffer_and_jp_residential_exit_are_enforced_without_gateway() {
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            r"
+sniffer:
+  enable: false
+  parse-pure-ip: false
+  skip-domain: ['*']
+  skip-dst-address: ['0.0.0.0/0']
+proxies:
+- {name: JP-REALITY-Direct, type: vless, tls: true, reality-opts: {public-key: fixture}, server: 193.3.174.212, port: 443}
+- {name: JP-REALITY-JP-Residential, type: vless, tls: true, reality-opts: {public-key: fixture}, server: 193.3.174.212, port: 443}
+proxy-groups:
+- {name: Japan, type: select, proxies: [JP-REALITY-Direct, JP-REALITY-JP-Residential]}
+rules:
+- MATCH,Japan
+",
+        )
+        .expect("fixture");
+        enforce_with_gateway(&mut config, false);
+        let protected = config["proxy-groups"]
+            .as_sequence()
+            .expect("groups")
+            .iter()
+            .find(|g| g["name"].as_str() == Some(OUTBOUND))
+            .expect("protected group");
+        assert_eq!(
+            protected["proxies"],
+            Value::Sequence(vec!["JP-REALITY-JP-Residential".into()])
+        );
+        let sniffer = config["sniffer"].as_mapping().expect("sniffer");
+        assert_eq!(sniffer["enable"], Value::Bool(true));
+        assert_eq!(sniffer["parse-pure-ip"], Value::Bool(true));
+        assert_eq!(sniffer["force-dns-mapping"], Value::Bool(true));
+        assert_eq!(sniffer["override-destination"], Value::Bool(false));
+        assert!(!sniffer.contains_key("skip-domain"));
+        let skip_dst = sniffer["skip-dst-address"].as_sequence().expect("skip-dst");
+        assert!(!skip_dst.contains(&Value::from("0.0.0.0/0")));
+        assert!(skip_dst.contains(&Value::from("103.5.250.92/32")));
+        assert!(skip_dst.contains(&Value::from("192.168.0.0/16")));
+        if cfg!(target_os = "windows") {
+            assert!(skip_dst.contains(&Value::from("8.134.107.154/32")));
+        }
+        let once = config.clone();
+        enforce_with_gateway(&mut config, false);
         assert_eq!(config, once);
     }
 }

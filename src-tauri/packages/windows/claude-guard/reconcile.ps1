@@ -29,6 +29,15 @@ function Find-ClaudeApplications {
                 } | ForEach-Object { [void]$paths.Add($_.FullName) }
             }
         }
+        $nativeHostRoot = Join-Path $homePath 'AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude-NativeHost'
+        if (Test-Path -LiteralPath $nativeHostRoot -PathType Container) {
+            Get-ChildItem -LiteralPath $nativeHostRoot -Directory | Where-Object {
+                $_.Name -match '^\d+(\.\d+){2,3}$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+            } | ForEach-Object {
+                $hostBinary = Join-Path $_.FullName 'chrome-native-host.exe'
+                if (Test-Path -LiteralPath $hostBinary -PathType Leaf) { [void]$paths.Add($hostBinary) }
+            }
+        }
         $legacy = Join-Path $env:ProgramData ((Split-Path $homePath -Leaf) + '\AnthropicClaude')
         if (Test-Path -LiteralPath $legacy) {
             Get-ChildItem -LiteralPath $legacy -Recurse -File -Filter '*.exe' | ForEach-Object { [void]$paths.Add($_.FullName) }
