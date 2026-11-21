@@ -163,12 +163,17 @@ function Get-ProtectedExecutables {
 }
 
 function Get-NonMetaAdapterAliases {
+    $ipv4Aliases = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        ForEach-Object { [void]$ipv4Aliases.Add($_.InterfaceAlias) }
+
     return @(
         Get-NetAdapter -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.Name -ne 'Meta' -and
-                $_.InterfaceDescription -notmatch 'Meta Tunnel|Wintun' -and
-                $_.Status -ne 'Not Present'
+                $_.InterfaceDescription -notmatch 'Meta Tunnel|Wintun|Bluetooth' -and
+                $_.Status -ne 'Not Present' -and
+                $ipv4Aliases.Contains($_.Name)
             } |
             Select-Object -ExpandProperty Name |
             Sort-Object -Unique
@@ -218,7 +223,8 @@ function Invoke-Audit {
     $fwOwned = @(Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue)
     $hasIpV4 = [bool](Get-NetFirewallRule -Name 'ClaudeGuardV3-AnthropicIPv4-Block' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Block' })
     $hasIpV6 = [bool](Get-NetFirewallRule -Name 'ClaudeGuardV3-AnthropicIPv6-Block' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Block' })
-    $hasDnsLeakBlock = [bool](Get-NetFirewallRule -Name 'ClaudeGuardV3-NrptDnsNonMeta-Block' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Block' })
+    $nrptDnsRules = @($fwOwned | Where-Object { $_.Name -like 'ClaudeGuardV3-NrptDnsNonMeta-*' -and $_.Enabled -eq 'True' -and $_.Action -eq 'Block' })
+    $hasDnsLeakBlock = ($nrptDnsRules.Count -gt 0)
 
     $nrptRules = @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.Comment -eq $NrptCommentTag })
     $expectedNs = Get-ExpectedNrptNamespaces
@@ -325,15 +331,33 @@ function Invoke-Apply {
         -RemoteAddress $AnthropicIPv6Cidrs `
         -Description 'Blocks direct IPv6 (TCP/UDP) to Anthropic 2607:6bc0::/48 from all processes.'
 
-    # 3. Block NRPT target DNS (198.18.0.2) on all non-Meta interfaces so queries never leak out physical NICs when Clash TUN is stopped.
+    # 3. Block NRPT target DNS (198.18.0.2) per non-Meta IPv4 adapter so queries never leak out physical NICs when Clash TUN is stopped.
+    Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'ClaudeGuardV3-NrptDnsNonMeta-*' } |
+        Remove-NetFirewallRule | Out-Null
+
     $nonMeta = Get-NonMetaAdapterAliases
-    if ($nonMeta.Count -gt 0) {
-        Ensure-FirewallBlockRule `
-            -Name 'ClaudeGuardV3-NrptDnsNonMeta-Block' `
-            -DisplayName 'Claude Guard v3 - Prevent NRPT DNS 198.18.0.2 leak on non-TUN adapters' `
-            -RemoteAddress @($NrptTargetDns) `
-            -InterfaceAlias $nonMeta `
-            -Description 'Drops 198.18.0.2 outbound on physical/non-Meta NICs when Clash TUN is stopped.'
+    $appliedDnsBlocks = 0
+    foreach ($alias in $nonMeta) {
+        $adapter = Get-NetAdapter -Name $alias -ErrorAction SilentlyContinue
+        $h = Get-ShortHash $alias
+        try {
+            Ensure-FirewallBlockRule `
+                -Name "ClaudeGuardV3-NrptDnsNonMeta-$h" `
+                -DisplayName "Claude Guard v3 - Block NRPT DNS 198.18.0.2 on $alias" `
+                -RemoteAddress @($NrptTargetDns) `
+                -InterfaceAlias @($alias) `
+                -Description "Drops 198.18.0.2 outbound on $alias when Clash TUN is stopped."
+            $appliedDnsBlocks++
+        } catch {
+            if ($adapter -and $adapter.Status -eq 'Up') {
+                throw "Failed to bind NRPT DNS leak block to active adapter '$alias': $($_.Exception.Message)"
+            }
+            Write-Warning "Skipped disconnected adapter '$alias' not registered in Windows Firewall: $($_.Exception.Message)"
+        }
+    }
+    if ($appliedDnsBlocks -eq 0) {
+        throw 'No non-Meta IPv4 network adapters accepted the NRPT DNS leak block.'
     }
 
     # 4. Defense-in-depth non-loopback Defender Firewall rules for all discovered Claude & Chrome/Edge binaries.
